@@ -1,7 +1,7 @@
 # streamlit_app.py
 # -*- coding: utf-8 -*-
 """
-集客コンサルAI（Stripe課金・会員化・ユーザー保存・動画広告・裏コマンド対応）
+集客コンサルAI（Stripe課金・会員化・ユーザー保存・動画広告・裏コマンド・**LLM搭載**）
 
 このアプリは以下を満たします：
 - 日本語UI：業種/目標/予算/地域/ペルソナで 7日間アクションプラン自動生成
@@ -9,10 +9,8 @@
 - **無料/PRO（有料）**の差別化（PROは詳細チェックやAB設計など拡張）
 - **Stripe Checkout** で決済 → 返却URLで検証し PRO 付与
 - **Supabase** で会員化（ログイン/サインアップ）＆プラン保存
-- **裏コマンド（イースターエッグ）**：特定ボタンの**連続7タップ**で **7日間だけPRO解放**
-  - ログイン済み=Supabaseの `profiles.pro_until` に期限を書き込み
-  - 未ログイン（ゲスト）=セッション内のみ有効
-- スマホに最適化した UI
+- **裏コマンド**：特定ボタンの**連続7タップ**で **7日間だけPRO解放**（ゲストはセッションのみ）
+- **LLM搭載**：OpenAI（可）で“AIが考えた”プランを生成。失敗時は規則ベースに自動フォールバック。
 
 【設定】.streamlit/secrets.toml に以下を定義してください：
 
@@ -20,7 +18,7 @@
 # Stripe
 STRIPE_SECRET_KEY = "sk_live_... または sk_test_..."
 STRIPE_PUBLISHABLE_KEY = "pk_live_... または pk_test_..."
-STRIPE_PRICE_ID = "price_..."                # サブスク/一括いずれも可
+STRIPE_PRICE_ID = "price_..."
 STRIPE_DOMAIN = "https://あなたのドメイン"      # 例: https://your-app.streamlit.app
 STRIPE_SUCCESS_PATH = "/?paid=1"
 STRIPE_CANCEL_PATH = "/?canceled=1"
@@ -29,32 +27,22 @@ STRIPE_CANCEL_PATH = "/?canceled=1"
 SUPABASE_URL = "https://xxxx.supabase.co"
 SUPABASE_ANON_KEY = "public anon key"
 
+# LLM（任意：設定すればAI生成が有効に）
+OPENAI_API_KEY = "sk-..."                     # OpenAI を使う場合
+OPENAI_MODEL = "gpt-4o-mini"                  # 例
+USE_LLM = true                                 # false で無効
+
 # デモ用バックドア（本番は無効化推奨）
 PRO_UNLOCK_CODE = "PRO-2025"
 
-【Supabase 側の用意】
-- Auth：Email/Password（または Google/OAuth）を有効化
-- Table: profiles(
-    id uuid pk,
-    email text unique,
-    created_at timestamptz default now(),
-    stripe_customer_id text,
-    pro boolean default false,
-    pro_until timestamptz  -- ★ 裏コマンド用の期限
-  )
-- Table: plans(id bigserial pk, user_id uuid references profiles(id), created_at timestamptz default now(), form jsonb, plan_md text)
-- RLS: profiles は auth.uid() = id に限定、plans は user_id = auth.uid() のみ読書き可能
-
-【Stripe 側の用意】
-- 商品/PRICE を作成（例：月額プランや買い切り）
-- Checkout の成功URL / キャンセルURL を secrets で指定
-- Webhook を別途 Cloud Functions などに用意できると堅牢（本コードは戻り URL で session を検証する方式）
+【Supabase 側の用意】/【Stripe 側の用意】はソース先頭コメント参照。
 """
 
 from __future__ import annotations
 import os
 import time
 import random
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
@@ -64,8 +52,14 @@ import streamlit as st
 # streamlit
 # stripe==7.*
 # supabase==2.*
+# openai>=1.40.0
 import stripe
 from supabase import create_client, Client
+
+try:
+    from openai import OpenAI  # 新SDK
+except Exception:
+    OpenAI = None
 
 # ---------------------------
 # ページ設定 & CSS（スマホ向け）
@@ -86,8 +80,9 @@ MOBILE_CSS = """
 .ad { border: 1px dashed #cfcfcf; border-radius: var(--radius); padding: .6rem; background: #fffdfa; }
 .ad small { color:#888; }
 .footer-cta { position: fixed; bottom: 8px; left: 0; right: 0; z-index: 9999; display: grid; place-items: center; }
-.footer-cta > div { background:#0ea5e9; color:#fff; font-weight:700; padding:.8rem 1.2rem; border-radius:999px; }
+.footer-cta-inner { background:#0ea5e9; color:#fff; font-weight:700; padding:.8rem 1.2rem; border-radius:999px; }
 .hidden { color: transparent; user-select: none; }
+a { text-decoration: none; }
 </style>
 """
 st.markdown(MOBILE_CSS, unsafe_allow_html=True)
@@ -115,6 +110,11 @@ sb: Client | None = None
 if SUPABASE_URL and SUPABASE_ANON_KEY:
     sb = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
+# LLM
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
+OPENAI_MODEL = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+USE_LLM = bool(st.secrets.get("USE_LLM", True)) and (OPENAI_API_KEY is not None)
+
 # ---------------------------
 # セッション初期化
 # ---------------------------
@@ -130,11 +130,10 @@ if "ad_started_at" not in st.session_state:
     st.session_state.ad_started_at = None
 if "user" not in st.session_state:
     st.session_state.user = None  # {id, email, pro, pro_until}
-# 裏コマンド用カウンタ
 if "secret_taps" not in st.session_state:
     st.session_state.secret_taps = 0
 if "secret_start" not in st.session_state:
-    st.session_state.secret_start = None  # epoch seconds
+    st.session_state.secret_start = None
 
 # ---------------------------
 # ユーティリティ
@@ -150,7 +149,9 @@ JST = timezone(timedelta(hours=9))
 def now_jst():
     return datetime.now(tz=JST)
 
-# 簡易コピー/プラン生成
+# ---------------------------
+# ルールベース生成（フォールバック）
+# ---------------------------
 INDUSTRY_HINTS: Dict[str, Dict] = {
     "飲食": {"channels": ["Googleビジネスプロフィール","Instagramリール","LINE公式","食べログ/ぐるなび広告"], "kpi": "来店予約"},
     "美容・サロン": {"channels": ["Instagram/ストーリーズ","ホットペッパー","LINE予約","TikTok UGC"], "kpi": "予約数"},
@@ -210,7 +211,8 @@ def build_day_plan(day: int, channels: List[str], pro: bool) -> Dict:
         plan["ab"] = ["見出し A/B（ベネ vs 社会証明）","CTA（今すぐ vs 無料で試す）"]
     return plan
 
-def generate_plan(industry: str, goal: str, budget: int, region: str, persona: str, pro: bool) -> str:
+# ルールベース → Markdown
+def rule_based_markdown(industry: str, goal: str, budget: int, region: str, persona: str, pro: bool) -> str:
     channels = pick_channels(industry, budget)
     kpi = estimate_kpi(industry, budget)
     copies = copy_examples(goal, persona, region)
@@ -232,6 +234,73 @@ def generate_plan(industry: str, goal: str, budget: int, region: str, persona: s
             md += ["  - チェック:"] + [f"    - {c}" for c in d["checks"]]
         if d.get("ab"):
             md += ["  - ABテスト:"] + [f"    - {a}" for a in d["ab"]]
+        md += [""]
+    return "\n".join(md)
+
+# ---------------------------
+# LLM生成
+# ---------------------------
+def llm_markdown(industry: str, goal: str, budget: int, region: str, persona: str, pro: bool) -> str:
+    if not (USE_LLM and OpenAI and OPENAI_API_KEY):
+        raise RuntimeError("LLM未設定")
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    sys = (
+        "日本語で回答するシニアグロースコンサル。7日間の集客アクションプランを、現実的な媒体設計・KPI・チェック項目込みで提案。"
+        "出力はJSONのみで、keys: summary{industry,goal,budget,region,persona,channels[],kpi}, copy{headline[],primary[],cta[]}, deliverables[], days[{day,theme,focus,tasks[],checks[],ab[]}]。"
+    )
+    user = {
+        "industry": industry,
+        "goal": goal,
+        "budget": budget,
+        "region": region,
+        "persona": persona,
+        "detail_level": "pro" if pro else "free",
+    }
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": sys},
+                {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+            ],
+            temperature=0.7,
+            response_format={"type": "json_object"},
+        )
+        content = resp.choices[0].message.content
+        data = json.loads(content)
+    except Exception as e:
+        # 失敗時はフォールバック
+        raise RuntimeError(f"LLM生成に失敗: {e}")
+
+    # JSON → Markdown
+    md = [f"# 7日間アクションプラン（{'PRO' if pro else 'FREE'}・LLM生成）\n"]
+    s = data.get("summary", {})
+    md += ["## 要約",
+           f"- 業種: {s.get('industry', industry)}",
+           f"- 目標: {s.get('goal', goal)}",
+           f"- 予算: {human_money(s.get('budget', budget))}",
+           f"- 地域: {s.get('region', region)}",
+           f"- ペルソナ: {s.get('persona', persona)}",
+           f"- 主要チャネル: {', '.join(s.get('channels', []))}",
+           f"- KPI: {s.get('kpi', '')}", ""]
+    c = data.get("copy", {})
+    md += ["## コピー例"]
+    for h in c.get("headline", []):
+        md += [f"- 見出し: {h}"]
+    for p in c.get("primary", []):
+        md += [f"- 本文: {p}"]
+    if c.get("cta"):
+        md += ["- CTA: " + " / ".join(c.get("cta", []))]
+    dlist = data.get("days", [])
+    md += ["", "## 日別タスク"]
+    for d in dlist:
+        md += [f"### {d.get('day','Day ?')}｜{d.get('theme','')}", f"- フォーカス: {d.get('focus','')}"]
+        for t in d.get("tasks", []):
+            md += [f"  - {t}"]
+        if pro and d.get("checks"):
+            md += ["  - チェック:"] + [f"    - {x}" for x in d.get("checks", [])]
+        if pro and d.get("ab"):
+            md += ["  - ABテスト:"] + [f"    - {x}" for x in d.get("ab", [])]
         md += [""]
     return "\n".join(md)
 
@@ -259,7 +328,6 @@ def ensure_profile(email: str, user_id: str):
     return res.data
 
 def refresh_pro_status_from_server():
-    """profiles.pro / pro_until を見て tier を更新。期限切れなら free に戻す。"""
     if not (sb and st.session_state.user and st.session_state.user.get("id") not in (None, "guest")):
         return
     try:
@@ -402,8 +470,10 @@ with st.sidebar:
     else:
         st.write("現在のプラン: 無料")
 
+    # 認証UI
     auth_ui()
 
+    # デモ用コード
     demo = st.text_input("PROコード（デモ）", type="password")
     if demo:
         if demo == PRO_UNLOCK_CODE:
@@ -425,19 +495,19 @@ with st.sidebar:
 
     st.divider()
     with st.expander("アプリ情報", expanded=False):
-        st.caption("バージョン: 1.2.0（長押し/連打で開発者メニュー…？）")
+        st.caption("バージョン: 1.3.0（LLM搭載）")
         if st.button("バージョン情報（7回で秘密）", help="7回連続でタップすると…"):
             handle_secret_tap()
         if 0 < st.session_state.secret_taps < 7:
             st.progress(st.session_state.secret_taps / 7)
 
-# 戻りURLでの検証
+# 戻りURLでの検証（Stripe）
 q = st.query_params
 if q.get("session_id"):
     if verify_checkout_and_mark_pro(q.get("session_id")):
         st.success("決済を確認しました。PRO が有効になりました。")
 
-# 期限切れ処理（ゲスト/ローカル）
+# 期限切れ処理
 if st.session_state.user and st.session_state.user.get("pro_until"):
     try:
         until = datetime.fromisoformat(str(st.session_state.user.get("pro_until")).replace("Z","+00:00")).astimezone(JST)
@@ -470,9 +540,12 @@ if st.session_state.step == "input":
         persona = st.text_area("ペルソナ（属性/悩み/行動）", placeholder="例：30代女性。仕事帰りに寄れる/時短重視。SNSで口コミをよく見る")
         st.markdown('</div>', unsafe_allow_html=True)
 
+        # 入力画面にも動画広告
         show_video_ad()
 
         disabled = not (industry and goal and budget and region and persona)
+
+        # 元の「作成」ボタン（そのまま残し）
         if st.button("7日間プランを作成", use_container_width=True, disabled=disabled):
             st.session_state.form_data = {
                 "industry": industry,
@@ -485,7 +558,29 @@ if st.session_state.step == "input":
             st.session_state.step = "ad"
             st.experimental_rerun()
 
-    st.markdown("<div class='footer-cta'><div>無料で今すぐ作成 ▶</div></div>", unsafe_allow_html=True)
+        # ---- フッターCTA（押せる版）：?cta=1 を付けて同挙動にする ----
+        st.markdown(
+            "<div class='footer-cta'><a href='?cta=1'><div class='footer-cta-inner'>無料で今すぐ作成 ▶</div></a></div>",
+            unsafe_allow_html=True
+        )
+
+        # CTAリンクから来た時の処理（入力値が揃っているかチェック）
+        if q.get("cta") == "1":
+            if disabled:
+                st.toast("未入力の項目があります。必要項目を埋めてください。", icon="⚠️")
+            else:
+                st.session_state.form_data = {
+                    "industry": industry,
+                    "goal": goal,
+                    "budget": int(budget),
+                    "region": region,
+                    "persona": persona,
+                }
+                st.session_state.ad_started_at = time.time()
+                st.session_state.step = "ad"
+                # URLクリーンアップ（?cta=1 を消す）
+                st.query_params.clear()
+                st.experimental_rerun()
 
 elif st.session_state.step == "ad":
     st.header("少々お待ちください…結果を準備中")
@@ -503,7 +598,14 @@ elif st.session_state.step == "ad":
         if st.button(btn_label, use_container_width=True, disabled=disabled):
             d = st.session_state.form_data
             pro = (st.session_state.tier == "pro") or (st.session_state.user and st.session_state.user.get("pro"))
-            st.session_state.plan_md = generate_plan(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro)
+            # LLM優先 → 失敗時フォールバック
+            if USE_LLM:
+                try:
+                    st.session_state.plan_md = llm_markdown(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro)
+                except Exception:
+                    st.session_state.plan_md = rule_based_markdown(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro)
+            else:
+                st.session_state.plan_md = rule_based_markdown(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro)
             st.session_state.step = "result"
             st.experimental_rerun()
 
@@ -544,3 +646,5 @@ else:
             st.info("PRO を購入すると、詳細チェックやAB設計が追加されます。サイドバーから決済へ。")
         else:
             st.success("PRO 機能が有効です。")
+
+# ここまで
