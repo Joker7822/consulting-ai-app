@@ -1,38 +1,22 @@
-# 集客コンサルAI（LLM搭載・Streamlit）
+# 集客コンサルAI（Streamlit）
 
-- 無料/PRO差別化、Stripe課金、Supabase会員化、動画広告インタースティシャル、裏コマンド（7タップで7日PRO）
-- **LLM生成**（OpenAI）：`OPENAI_API_KEY` を `.streamlit/secrets.toml` に設定し、`USE_LLM=true` で有効化
-- LLM失敗時はルールベースに自動フォールバック
+## 使い方（ローカル）
+1. Python 3.10+ を用意
+2. 依存をインストール
+   ```
+   pip install -r requirements.txt
+   ```
+3. 実行
+   ```
+   streamlit run app.py
+   ```
+4. ブラウザが開いたら、日本語UIでブリーフを入力 → 診断
 
-## セットアップ
-```bash
-pip install -r requirements.txt
-streamlit run streamlit_app.py
-```
+## 有料プラン（デモ）
+- サイドバーで「有料（コード入力）」を選び、`PAID2025` を入力して有効化
+- 本番運用では Stripe Checkout/Customer Portal + Webhook で検証し、セッションにトークン付与してください
 
-### .streamlit/secrets.toml（例）
-```toml
-# Stripe
-STRIPE_SECRET_KEY = "sk_test_xxx"
-STRIPE_PUBLISHABLE_KEY = "pk_test_xxx"
-STRIPE_PRICE_ID = "price_xxx"
-STRIPE_DOMAIN = "http://localhost:8501"
-STRIPE_SUCCESS_PATH = "/?paid=1"
-STRIPE_CANCEL_PATH = "/?canceled=1"
-
-# Supabase
-SUPABASE_URL = "https://xxxx.supabase.co"
-SUPABASE_ANON_KEY = "public-anon-key"
-
-# LLM
-OPENAI_API_KEY = "sk-..."
-OPENAI_MODEL = "gpt-4o-mini"
-USE_LLM = true
-
-# Demo（本番は無効化）
-PRO_UNLOCK_CODE = "PRO-2025"
-```
-
-## デプロイ
-- GitHubにpush → Streamlit Community Cloudでデプロイ
-- もしくは任意のPaaSで `streamlit run streamlit_app.py`
+## デプロイ（GitHub + Streamlit Cloud）
+1. このフォルダをGitHubにpush
+2. https://share.streamlit.io にGitHub連携 → `app.py` を指定
+3. Secretsや環境変数があれば、Streamlitの「Settings → Secrets」に保存

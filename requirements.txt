@@ -1,4 +1,2 @@
-streamlit>=1.32
-stripe>=7.0.0
-supabase>=2.4.0
-openai>=1.40.0
+streamlit>=1.35.0
+pandas>=2.2.0
