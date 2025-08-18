@@ -38,116 +38,107 @@ PRO_UNLOCK_CODE = "PRO-2025"
 【Supabase 側の用意】/【Stripe 側の用意】はソース先頭コメント参照。
 """
 
+# streamlit_app.py
+# 集客コンサルAI（Persona Builder + LLM/ルールベース生成）
+# - ペルソナは“かんたん作成”で構造化入力
+# - 7日間プランは LLM（OpenAI）優先、失敗時はルールベースへ自動フォールバック
+# - LLM有効化は .streamlit/secrets.toml に OPENAI_API_KEY を設定し、USE_LLM=true
 
 from __future__ import annotations
-import os, time, random, json
+import time, random, json
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 import streamlit as st
-import stripe
-from supabase import create_client, Client
 try:
     from openai import OpenAI
 except Exception:
     OpenAI = None
 
-# ====== ページ設定 & CSS ======
-st.set_page_config(page_title="集客コンサルAI", page_icon="📈", layout="centered", initial_sidebar_state="collapsed")
+# ====== 設定 ======
+st.set_page_config(page_title="集客AIコンサル", page_icon="📈", layout="centered")
 
-BASE_CSS = """
-<style>
-:root { --radius: 16px; }
-.block-container { padding-top: 1rem; padding-bottom: 3.5rem; }
-.stButton>button { border-radius: var(--radius); padding: 0.9rem 1.1rem; font-weight: 700; }
-.card { border: 1px solid #eaeaea; border-radius: var(--radius); padding: 1rem 1.1rem; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.03); }
-.ad { border: 1px dashed #cfcfcf; border-radius: var(--radius); padding: .6rem; background: #fffdfa; }
-.ad small { color:#888; }
-.footer-cta { position: fixed; bottom: 8px; left: 0; right: 0; z-index: 9999; display: grid; place-items: center; }
-.footer-cta-inner { background:#0ea5e9; color:#fff; font-weight:700; padding:.8rem 1.2rem; border-radius:999px; }
-a { text-decoration: none; }
-.validation-msg { color:#b91c1c; font-size:0.9rem; margin-top:0.25rem; }
-</style>
-"""
-st.markdown(BASE_CSS, unsafe_allow_html=True)
-
-# ====== Secrets / 定数（前回と同じ） ======
-PRO_UNLOCK_CODE = st.secrets.get("PRO_UNLOCK_CODE", "PRO-2025")
-AD_MIN_SECONDS = 6
-STRIPE_SECRET_KEY = st.secrets.get("STRIPE_SECRET_KEY"); STRIPE_PUBLISHABLE_KEY = st.secrets.get("STRIPE_PUBLISHABLE_KEY")
-STRIPE_PRICE_ID = st.secrets.get("STRIPE_PRICE_ID"); STRIPE_DOMAIN = st.secrets.get("STRIPE_DOMAIN", "")
-STRIPE_SUCCESS_PATH = st.secrets.get("STRIPE_SUCCESS_PATH", "/"); STRIPE_CANCEL_PATH = st.secrets.get("STRIPE_CANCEL_PATH", "/")
-if STRIPE_SECRET_KEY: stripe.api_key = STRIPE_SECRET_KEY
-SUPABASE_URL = st.secrets.get("SUPABASE_URL"); SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY")
-sb: Client | None = create_client(SUPABASE_URL, SUPABASE_ANON_KEY) if (SUPABASE_URL and SUPABASE_ANON_KEY) else None
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY"); OPENAI_MODEL = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
-USE_LLM = bool(st.secrets.get("USE_LLM", True)) and (OPENAI_API_KEY is not None)
-
-# ====== セッション初期化（前回と同じ） ======
-if "step" not in st.session_state: st.session_state.step = "input"
-if "form_data" not in st.session_state: st.session_state.form_data = {}
-if "plan_md" not in st.session_state: st.session_state.plan_md = ""
-if "tier" not in st.session_state: st.session_state.tier = "free"
-if "ad_started_at" not in st.session_state: st.session_state.ad_started_at = None
-if "user" not in st.session_state: st.session_state.user = None
-if "secret_taps" not in st.session_state: st.session_state.secret_taps = 0
-if "secret_start" not in st.session_state: st.session_state.secret_start = None
-
-# ====== Util / 生成系（前回と同じ：human_money / rule_based_markdown / llm_markdown ほか） ======
-from datetime import timezone, timedelta
 JST = timezone(timedelta(hours=9))
 def now_jst(): return datetime.now(tz=JST)
+
+USE_LLM = bool(st.secrets.get("USE_LLM", False)) and st.secrets.get("OPENAI_API_KEY") is not None
+OPENAI_MODEL = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+
+# ====== スタイル ======
+st.markdown("""
+<style>
+:root { --radius: 16px; }
+.block-container { padding-top: 1rem; padding-bottom: 4.5rem; }
+.card { border: 1px solid #eaeaea; border-radius: var(--radius); padding: 1rem 1.1rem; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.03); }
+.badge-required { display:inline-block; margin-left:.5rem; padding:.08rem .45rem; font-size:.75rem; font-weight:700; color:#b91c1c; background:#fee2e2; border:1px solid #fecaca; border-radius:999px; vertical-align:middle; }
+.footer-cta { position: fixed; bottom: 8px; left: 0; right: 0; z-index: 9999; display: grid; place-items: center; }
+.footer-cta-inner { background:#0ea5e9; color:#fff; font-weight:700; padding:.8rem 1.2rem; border-radius:999px; }
+.validation-msg { color:#b91c1c; font-size:0.9rem; margin-top:0.25rem; }
+.preview { border:1px dashed #cbd5e1; border-radius:12px; padding:10px 12px; background:#fafafa; }
+.help { color:#64748b; font-size:.85rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# ====== データ ======
+INDUSTRY_HINTS = {
+    "飲食":  {"tags": ["駅近", "仕事帰り", "女子会", "禁煙", "家族連れ", "コスパ", "映え", "予約即時", "口コミ重視"]},
+    "美容・サロン": {"tags": ["時短", "ダメージケア", "学生割", "在宅ワーク", "ホットペッパー", "平日昼", "指名", "口コミ重視"]},
+    "クリニック": {"tags": ["痛みが不安", "女性医師", "待ち時間短縮", "土日OK", "オンライン予約", "駅近", "清潔感"]},
+    "フィットネス": {"tags": ["体験重視", "時短30分", "ダイエット", "ヨガ", "パーソナル", "仕事前", "仕事後"]},
+    "EC/物販": {"tags": ["ギフト", "限定色", "レビュー重視", "お急ぎ", "返品無料", "SNS紹介", "セット割"]},
+    "B2B":   {"tags": ["決裁者目線", "ROI重視", "比較検討", "資料DL", "導入事例", "セミナー", "トライアル"]},
+    "不動産": {"tags": ["駅近", "築浅", "子育て", "投資用", "賃貸", "購入", "内見即時"]},
+    "教育":  {"tags": ["受験対策", "オンライン", "個別指導", "送迎あり", "短期集中", "初めて"]},
+    "その他": {"tags": ["口コミ重視", "即時", "短納期", "価格重視", "品質重視"]},
+}
+
+PRESETS = {
+    "飲食": [
+        {"name":"仕事帰りのOL","age":"25-34","gender":"女性","role":"事務職","income":"300-500万",
+         "interests":["女子会","映え"],"pains":["並びたくない","失敗したくない"],"triggers":["SNSの写真","友人の口コミ"],
+         "channels":["Instagram","Googleマップ"],"time":["平日夜"]},
+        {"name":"子連れファミリー","age":"30-44","gender":"男女","role":"会社員","income":"500-800万",
+         "interests":["家族で安心","禁煙"],"pains":["子供連れで入りづらい"],"triggers":["口コミ","クーポン"],
+         "channels":["Googleマップ","LINE"],"time":["土日昼"]},
+    ],
+    "B2B": [
+        {"name":"情報シスMgr","age":"35-49","gender":"男性","role":"情報システム","income":"800-1200万",
+        "interests":["コスト削減","安定稼働"],"pains":["比較の手間"],"triggers":["事例","価格表"],
+        "channels":["LinkedIn","ウェビナー"],"time":["平日昼"]},
+    ]
+}
+
+# ====== 生成ロジック（ルールベース & LLM） ======
+DEFAULT_CHANNELS = ["Googleビジネスプロフィール","Instagramリール","LINE公式","検索広告(指名)"]
+
+def pick_channels(industry: str, budget: int) -> List[str]:
+    guess = {
+        "飲食": ["Googleマップ最適化","Instagramリール","LINE公式","食べログ広告","検索広告(指名)"],
+        "美容・サロン": ["Instagramストーリーズ","ホットペッパー","LINE予約","TikTok UGC","検索広告(指名)"],
+        "クリニック": ["検索広告(症状)","ローカルSEO","LP最適化","LINE問診","Googleマップ最適化"],
+        "フィットネス": ["YouTubeショート","体験会LP","Meta(リード)","LINE予約","検索広告(指名)"],
+        "EC/物販": ["Meta(カタログ)","Instagramショップ","リール広告","レビュー収集","検索広告(指名)"],
+        "B2B": ["ウェビナー","LinkedIn広告","ホワイトペーパー","メールナーチャリング","検索広告(非指名)"],
+    }.get(industry, DEFAULT_CHANNELS)
+    if budget < 50000: return guess[:3]
+    if budget < 200000: return guess[:4]
+    return list(dict.fromkeys(guess + ["TikTok UGC","YouTubeショート"]))[:5]
+
+def estimate_kpi(industry: str, budget: int) -> str:
+    if industry == "B2B":
+        lo, hi = max(1, budget//9000), max(1, budget//4000)
+        return f"商談 {lo}〜{hi}件（目安）"
+    lo, hi = max(1, budget//2000), max(1, budget//800)
+    unit = "購入" if industry == "EC/物販" else "件"
+    return f"{lo}〜{hi}{unit}（目安）"
 
 def human_money(n:int)->str:
     try: return f"{int(n):,}円"
     except: return str(n)
 
-INDUSTRY_HINTS: Dict[str, Dict] = {
-    "飲食": {"channels": ["Googleビジネスプロフィール","Instagramリール","LINE公式","食べログ/ぐるなび広告"], "kpi": "来店予約"},
-    "美容・サロン": {"channels": ["Instagram/ストーリーズ","ホットペッパー","LINE予約","TikTok UGC"], "kpi": "予約数"},
-    "クリニック": {"channels": ["検索広告(症状)","ローカルSEO","LP最適化","LINE問診"], "kpi": "初診予約"},
-    "フィットネス": {"channels": ["YouTubeショート","体験会LP","Meta(リード)","LINE予約"], "kpi": "体験申込"},
-    "EC/物販": {"channels": ["Meta(カタログ)","Instショップ","リール広告","レビュー収集"], "kpi": "購入"},
-    "B2B": {"channels": ["ウェビナー","LinkedIn広告","WP/LP","ナーチャリング"], "kpi": "商談"},
-}
-DEFAULT_CHANNELS = ["Googleビジネスプロフィール","Instagramリール","LINE公式","検索広告(指名)"]
-
-def pick_channels(industry:str, budget:int)->List[str]:
-    base = INDUSTRY_HINTS.get(industry, {}).get("channels", DEFAULT_CHANNELS)
-    if budget < 50000: return base[:3]
-    elif budget < 200000: return base[:4]
-    else:
-        extra = ["YouTubeショート","TikTok UGC","Meta(リード)"]
-        return list(dict.fromkeys(base + extra))[:5]
-
-def estimate_kpi(industry:str, budget:int)->str:
-    if industry == "B2B":
-        low, high = max(1, budget//9000), max(1, budget//4000)
-        return f"商談 {low}〜{high}件（目安）"
-    else:
-        low, high = max(1, budget//2000), max(1, budget//800)
-        unit = "購入" if industry == "EC/物販" else "件"
-        return f"{low}〜{high}{unit}（目安）"
-
-def copy_examples(goal:str, persona:str, region:str)->Dict[str, List[str]]:
-    pain = "悩みを最短で解決" if goal in ("予約","問い合わせ","資料請求") else "今だけお得"
-    return {
-        "headline": [f"{region}で{goal}なら今がチャンス", f"{persona[:12]}向け｜{pain}", "初めてでも安心のサポート"],
-        "primary": [f"{region}で探している{persona}の方へ。今が最適なご提案です。","スマホ30秒で完了。ご相談は無料。","口コミで選ばれています。まずはチェック。"],
-        "cta": ["無料で試す","予約する","相談する"],
-    }
-
 def build_day_plan(day:int, channels:List[str], pro:bool)->Dict:
-    skeleton = [
-        "市場/競合リサーチ・カスタマージャーニー設計",
-        "計測設定（GA4/タグ/電話計測）",
-        "クリエイティブ作成（画像/動画/コピー）",
-        "LP改善とABテスト設計",
-        "広告出稿・予算配分・除外設定",
-        "UGC/口コミ獲得・SNS運用",
-        "分析・次週計画・伸びしろ抽出",
-    ]
-    import random
+    skeleton = ["市場/競合リサーチ・カスタマージャーニー設計","計測設定（GA4/タグ/電話計測）","クリエイティブ作成（画像/動画/コピー）",
+                "LP改善とABテスト設計","広告出稿・予算配分・除外設定","UGC/口コミ獲得・SNS運用","分析・次週計画・伸びしろ抽出"]
     today = ", ".join(random.sample(channels, min(3, len(channels))))
     plan = {"day": f"Day {day}", "theme": skeleton[(day-1)%len(skeleton)], "focus": today,
             "tasks": [f"{today} を中心に実施","KPI ダッシュボード更新","翌日の改善点をメモ"]}
@@ -156,15 +147,14 @@ def build_day_plan(day:int, channels:List[str], pro:bool)->Dict:
         plan["ab"] = ["見出し A/B（ベネ vs 社会証明）","CTA（今すぐ vs 無料で試す）"]
     return plan
 
-def rule_based_markdown(industry, goal, budget, region, persona, pro)->str:
-    channels = pick_channels(industry, budget); kpi = estimate_kpi(industry, budget); copies = copy_examples(goal, persona, region)
+def rule_based_markdown(industry: str, goal: str, budget: int, region: str, persona: str, pro: bool) -> str:
+    channels = pick_channels(industry, budget)
+    kpi = estimate_kpi(industry, budget)
     days = [build_day_plan(i, channels, pro) for i in range(1,8)]
     md = [f"# 7日間アクションプラン（{'PRO' if pro else 'FREE'}）\n",
           "## 要約", f"- 業種: {industry}", f"- 目標: {goal}", f"- 予算: {human_money(budget)}",
-          f"- 地域: {region}", f"- ペルソナ: {persona}", f"- 主要チャネル: {', '.join(channels)}", f"- KPI（目安）: {kpi}", "",
-          "## コピー例"]
-    md += [f"- 見出し: {h}" for h in copies["headline"]]
-    md += [f"- 本文: {p}" for p in copies["primary"]]; md += ["- CTA: " + " / ".join(copies["cta"]), "", "## 日別タスク"]
+          f"- 地域: {region}", f"- ペルソナ: {persona}", f"- 主要チャネル: {', '.join(channels)}", f"- KPI（目安）: {kpi}", ""]
+    md += ["## 日別タスク"]
     for d in days:
         md += [f"### {d['day']}｜{d['theme']}", f"- フォーカス: {d['focus']}"]
         for t in d["tasks"]: md += [f"  - {t}"]
@@ -173,27 +163,39 @@ def rule_based_markdown(industry, goal, budget, region, persona, pro)->str:
         md += [""]
     return "\n".join(md)
 
-def llm_markdown(industry, goal, budget, region, persona, pro)->str:
-    if not (USE_LLM and OpenAI and OPENAI_API_KEY): raise RuntimeError("LLM未設定")
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    sys = ("日本語で回答するシニアグロースコンサル。7日間の集客アクションプランを、現実的な媒体設計・KPI・チェック項目込みで提案。"
-           "出力はJSONのみで、keys: summary{industry,goal,budget,region,persona,channels[],kpi}, copy{headline[],primary[],cta[]}, deliverables[], days[{day,theme,focus,tasks[],checks[],ab[]}]。")
-    user = {"industry": industry, "goal": goal, "budget": budget, "region": region, "persona": persona, "detail_level": "pro" if pro else "free"}
+def llm_markdown(industry: str, goal: str, budget: int, region: str, persona: str, pro: bool) -> str:
+    if not (USE_LLM and OpenAI and st.secrets.get("OPENAI_API_KEY")):
+        raise RuntimeError("LLM未設定")
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    sys = (
+        "日本語のシニアグロースコンサルとして、7日間の集客アクションプランを提案。"
+        "現実的な媒体設計・KPI・チェック項目込み。"
+        "出力はJSONのみ: summary{industry,goal,budget,region,persona,channels[],kpi}, days[{day,theme,focus,tasks[],checks[],ab[]}]."
+    )
+    user = {"industry":industry,"goal":goal,"budget":budget,"region":region,"persona":persona,"detail_level":"pro" if pro else "free"}
     try:
-        resp = client.chat.completions.create(model=OPENAI_MODEL,
-                    messages=[{"role":"system","content":sys}, {"role":"user","content":json.dumps(user, ensure_ascii=False)}],
-                    temperature=0.7, response_format={"type":"json_object"})
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role":"system","content":sys},{"role":"user","content":json.dumps(user, ensure_ascii=False)}],
+            temperature=0.7,
+            response_format={"type":"json_object"},
+        )
         data = json.loads(resp.choices[0].message.content)
     except Exception as e:
         raise RuntimeError(f"LLM生成に失敗: {e}")
-    md = [f"# 7日間アクションプラン（{'PRO' if pro else 'FREE'}・LLM生成）\n","## 要約"]
+
     s = data.get("summary", {})
-    md += [f"- 業種: {s.get('industry', industry)}", f"- 目標: {s.get('goal', goal)}", f"- 予算: {human_money(s.get('budget', budget))}",
-           f"- 地域: {s.get('region', region)}", f"- ペルソナ: {s.get('persona', persona)}", f"- 主要チャネル: {', '.join(s.get('channels', []))}",
-           f"- KPI: {s.get('kpi', '')}", ""]
-    c = data.get("copy", {}); md += ["## コピー例"]; md += [f"- 見出し: {h}" for h in c.get("headline", [])]; md += [f"- 本文: {p}" for p in c.get("primary", [])]
-    if c.get("cta"): md += ["- CTA: " + " / ".join(c.get("cta", []))]
-    dlist = data.get("days", []); md += ["", "## 日別タスク"]
+    dlist = data.get("days", [])
+    md = [f"# 7日間アクションプラン（{'PRO' if pro else 'FREE'}・LLM生成）\n",
+          "## 要約",
+          f"- 業種: {s.get('industry', industry)}",
+          f"- 目標: {s.get('goal', goal)}",
+          f"- 予算: {human_money(s.get('budget', budget))}",
+          f"- 地域: {s.get('region', region)}",
+          f"- ペルソナ: {s.get('persona', persona)}",
+          f"- 主要チャネル: {', '.join(s.get('channels', []))}",
+          f"- KPI: {s.get('kpi', '')}", ""]
+    md += ["## 日別タスク"]
     for d in dlist:
         md += [f"### {d.get('day','Day ?')}｜{d.get('theme','')}", f"- フォーカス: {d.get('focus','')}"]
         for t in d.get("tasks", []): md += [f"  - {t}"]
@@ -202,236 +204,180 @@ def llm_markdown(industry, goal, budget, region, persona, pro)->str:
         md += [""]
     return "\n".join(md)
 
-# ====== 認証/Stripe/裏コマンド（前回と同じ。省略せず可） ======
-def ensure_profile(email: str, user_id: str):
-    if not sb: return {"id": user_id, "email": email, "pro": False, "pro_until": None}
-    sb.table("profiles").upsert({"id": user_id, "email": email}).execute()
-    return sb.table("profiles").select("id,email,pro,pro_until,stripe_customer_id").eq("id", user_id).single().execute().data
+# ====== Persona Builder ======
+def persona_builder(industry: str) -> str:
+    st.markdown("#### ペルソナ<span class='badge-required'>必須</span>", unsafe_allow_html=True)
+    with st.expander("かんたん作成（推奨）", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        name = c1.text_input("呼び名（例：仕事帰りのOL）", value="")
+        age = c2.selectbox("年齢帯", ["", "18-24","25-34","35-44","45-54","55-64","65+"], index=0)
+        gender = c3.selectbox("性別", ["","女性","男性","男女","その他"], index=0)
 
-def refresh_pro_status_from_server():
-    if not (sb and st.session_state.user and st.session_state.user.get("id") not in (None, "guest")): return
-    try:
-        uid = st.session_state.user["id"]
-        res = sb.table("profiles").select("pro, pro_until").eq("id", uid).single().execute()
-        pro = bool(res.data.get("pro")); pro_until = res.data.get("pro_until")
-        if pro_until:
-            try:
-                until_dt = datetime.fromisoformat(pro_until.replace("Z","+00:00")).astimezone(JST)
-                if until_dt <= now_jst(): sb.table("profiles").update({"pro": False}).eq("id", uid).execute(); pro = False
-            except: pass
-        st.session_state.tier = "pro" if pro else "free"; st.session_state.user["pro"] = pro; st.session_state.user["pro_until"] = pro_until
-    except: pass
+        role = st.text_input("職業・役割（例：事務職 / 情シス / 主婦 など）", value="")
+        c4, c5 = st.columns(2)
+        income = c4.selectbox("年収帯", ["","〜300万","300-500万","500-800万","800-1200万","1200万+"])
+        timeband = c5.multiselect("行動時間帯", ["平日朝","平日昼","平日夜","土日昼","土日夜"])
 
-def auth_ui():
-    if not sb:
-        st.info("Supabase未設定のため、ゲストとして利用します。左側の『PRO購入』から決済可能です。")
-        if st.session_state.get("user") is None: st.session_state.user = {"id":"guest","email":"guest@example.com","pro":False,"pro_until":None}
-        return
-    with st.expander("ログイン / 新規登録", expanded=st.session_state.get("user") is None):
-        tab_login, tab_signup = st.tabs(["ログイン","新規登録"])
-        with tab_login:
-            email = st.text_input("メールアドレス", key="login_email")
-            pw = st.text_input("パスワード", type="password", key="login_pw")
-            if st.button("ログイン"):
+        # タグ（業種に応じたヒント）
+        tags = INDUSTRY_HINTS.get(industry, INDUSTRY_HINTS["その他"])["tags"]
+        st.caption("関連タグ"); interests = st.multiselect("関心事", list(sorted(set(tags+["価格重視","品質重視","時短","安心","口コミ重視","限定/レア"]))))
+        pains = st.text_area("悩み・不安（改行区切り）", placeholder="例：並びたくない\n失敗したくない")
+        triggers = st.multiselect("意思決定のきっかけ", ["口コミ","SNSの写真","クーポン","ランキング","事例","比較表","価格"])
+        channels = st.multiselect("よく見るチャネル", ["Googleマップ","Instagram","LINE","YouTube","TikTok","Facebook","LinkedIn","メール"])
+
+        # プリセット
+        with st.popover("業種プリセットを読み込む"):
+            options = PRESETS.get(industry, [])
+            if not options:
+                st.caption("この業種のプリセットは準備中です。")
+            for i, p in enumerate(options, 1):
+                if st.button(f"プリセット {i}: {p['name']}"):
+                    st.session_state.update({
+                        "pb_name": p["name"], "pb_age": p["age"], "pb_gender": p["gender"], "pb_role": p["role"],
+                        "pb_income": p["income"], "pb_time": p["time"],
+                    })
+                    st.rerun()
+
+        # LLMで自動草案（任意）
+        if USE_LLM and OpenAI:
+            if st.button("AIに自動作成してもらう（任意）"):
+                client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                prompt = {"industry": industry, "tone": "日本語", "fields": ["name","age","gender","role","income","interests","pains","triggers","channels","time"]}
                 try:
-                    auth = sb.auth.sign_in_with_password({"email": email, "password": pw})
-                    st.session_state.user = ensure_profile(email, auth.user.id); refresh_pro_status_from_server(); st.success("ログインしました")
-                except Exception as e: st.error(f"ログインに失敗: {e}")
-        with tab_signup:
-            email = st.text_input("メールアドレス", key="signup_email")
-            pw = st.text_input("パスワード", type="password", key="signup_pw")
-            if st.button("新規登録"):
-                try:
-                    auth = sb.auth.sign_up({"email": email, "password": pw})
-                    st.session_state.user = ensure_profile(email, auth.user.id); refresh_pro_status_from_server(); st.success("登録しました。ログイン済みです。")
-                except Exception as e: st.error(f"登録に失敗: {e}")
+                    resp = client.chat.completions.create(
+                        model=OPENAI_MODEL,
+                        messages=[{"role":"system","content":"日本語で簡潔なJSONを返す"},
+                                  {"role":"user","content":json.dumps(prompt, ensure_ascii=False)}],
+                        response_format={"type":"json_object"},
+                        temperature=0.6,
+                    )
+                    data = json.loads(resp.choices[0].message.content)
+                    st.session_state.update({
+                        "pb_name": data.get("name",""),
+                        "pb_age": data.get("age",""),
+                        "pb_gender": data.get("gender",""),
+                        "pb_role": data.get("role",""),
+                        "pb_income": data.get("income",""),
+                        "pb_time": data.get("time", []),
+                    })
+                    st.success("AIで下書きを入れました。内容は編集できます。")
+                except Exception as e:
+                    st.error(f"AI生成に失敗: {e}")
 
-def create_checkout_session(email: str | None = None):
-    if not STRIPE_PRICE_ID or not STRIPE_SECRET_KEY or not STRIPE_DOMAIN: st.error("Stripeの設定が不足しています（PRICE/SECRET/DOMAIN）"); return
-    success_url = f"{STRIPE_DOMAIN}{STRIPE_SUCCESS_PATH}?session_id={{CHECKOUT_SESSION_ID}}"; cancel_url = f"{STRIPE_DOMAIN}{STRIPE_CANCEL_PATH}"
-    try:
-        return stripe.checkout.Session.create(line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
-                    mode="subscription" if STRIPE_PRICE_ID.startswith("price_") else "payment",
-                    success_url=success_url, cancel_url=cancel_url, customer_email=email, automatic_tax={"enabled": False})
-    except Exception as e: st.error(f"Checkout作成に失敗: {e}"); return None
+        # 復元
+        name = st.session_state.get("pb_name", name)
+        age = st.session_state.get("pb_age", age)
+        gender = st.session_state.get("pb_gender", gender)
+        role = st.session_state.get("pb_role", role)
+        income = st.session_state.get("pb_income", income)
+        timeband = st.session_state.get("pb_time", timeband)
 
-def verify_checkout_and_mark_pro(session_id: str):
-    if not session_id or not STRIPE_SECRET_KEY: return False
-    try:
-        sess = stripe.checkout.Session.retrieve(session_id)
-        paid = (sess.get("payment_status") == "paid") or (sess.get("status") == "complete")
-        if paid:
-            if sb and st.session_state.user and st.session_state.user.get("id") not in (None, "guest"):
-                uid = st.session_state.user["id"]
-                sb.table("profiles").update({"pro": True,"stripe_customer_id": sess.get("customer"),"pro_until": None}).eq("id", uid).execute()
-                st.session_state.user["pro"] = True; st.session_state.user["pro_until"] = None
-            st.session_state.tier = "pro"; return True
-        return False
-    except Exception as e: st.error(f"決済検証に失敗: {e}"); return False
+        preview = f"""
+**{name or '（呼び名未入力）'}** / {age or '年齢不明'} / {gender or '性別不明'}  
+- 役割: {role or '不明'} / 年収: {income or '不明'} / 行動時間帯: {', '.join(timeband) or '不明'}  
+- 関心: {', '.join(interests) or '—'}  
+- 悩み: {pains.replace('\n', ' / ') or '—'}  
+- きっかけ: {', '.join(triggers) or '—'}  
+- 見るチャネル: {', '.join(channels) or '—'}
+"""
+        st.markdown("<div class='preview'>"+preview+"</div>", unsafe_allow_html=True)
 
-def handle_secret_tap():
-    now = time.time()
-    if st.session_state.secret_start is None or (now - st.session_state.secret_start) > 20: st.session_state.secret_start = now; st.session_state.secret_taps = 0
-    st.session_state.secret_taps += 1
-    if st.session_state.secret_taps >= 7:
-        expires_at = now_jst() + timedelta(days=7); st.session_state.tier = "pro"
-        if st.session_state.user is None: st.session_state.user = {"id":"guest","email":"guest@example.com","pro":True,"pro_until":expires_at.isoformat()}
-        else: st.session_state.user["pro"] = True; st.session_state.user["pro_until"] = expires_at.isoformat()
-        try:
-            if sb and st.session_state.user and st.session_state.user.get("id") not in (None, "guest"):
-                sb.table("profiles").update({"pro": True, "pro_until": expires_at.isoformat()}).eq("id", st.session_state.user["id"]).execute()
-        except: pass
-        st.success("🎉 裏コマンド発動：7日間だけ PRO を解放しました！"); st.session_state.secret_taps = 0; st.session_state.secret_start = None
+        persona_text = f"{age or ''}{('・'+gender) if gender else ''}、{role or '—'}。関心は「{', '.join(interests) or '—'}」。悩みは「{pains.replace('\n',' / ') or '—'}」。意思決定のきっかけは「{', '.join(triggers) or '—'}」。主に「{', '.join(channels) or '—'}」を見て、{', '.join(timeband) or '—'}に行動。"
 
-# ====== サイドバー（前回と同じ） ======
-with st.sidebar:
-    st.markdown("### メニュー"); refresh_pro_status_from_server()
-    if st.session_state.tier == "pro":
-        st.success("現在のプラン: PRO（有料/一時解放含む）")
-        if st.session_state.user and st.session_state.user.get("pro_until"): st.caption(f"期限: {st.session_state.user.get('pro_until')}")
-    else:
-        st.write("現在のプラン: 無料")
-    auth_ui()
-    demo = st.text_input("PROコード（デモ）", type="password")
-    if demo:
-        if demo == PRO_UNLOCK_CODE: st.session_state.tier = "pro"; (st.session_state.user or {}).get("pro", True); st.success("PROを解放しました ✨（本番はStripeをご利用ください）")
-        else: st.error("コードが正しくありません")
-    st.divider(); st.markdown("#### PRO購入")
-    if st.button("Stripeで購入する", use_container_width=True):
-        email = st.session_state.user.get("email") if st.session_state.user else None
-        session = create_checkout_session(email)
-        if session and session.get("url"): st.markdown(f"<a href='{session['url']}' target='_self'>▶ Checkout へ</a>", unsafe_allow_html=True)
-    st.divider()
-    with st.expander("アプリ情報", expanded=False):
-        st.caption("バージョン: 1.3.0（LLM搭載・バリデーション強化）")
-        if st.button("バージョン情報（7回で秘密）", help="7回連続でタップすると…"): handle_secret_tap()
-        if 0 < st.session_state.secret_taps < 7: st.progress(st.session_state.secret_taps / 7)
+    st.markdown("**ペルソナ要約（編集可）**")
+    persona = st.text_area("", value=persona_text, label_visibility="collapsed")
 
-# ====== 戻りURLの検証（Stripe） ======
-q = st.query_params
-if q.get("session_id"): 
-    if verify_checkout_and_mark_pro(q.get("session_id")): st.success("決済を確認しました。PRO が有効になりました。")
+    if not persona.strip():
+        st.markdown("<div class='validation-msg'>⚠️ ペルソナ情報を入力してください（上のかんたん作成を使うと早いです）</div>", unsafe_allow_html=True)
 
-# ====== 入力 → 動画広告 → 結果 ======
+    return persona
+
+# ====== 本編 ======
 st.title("📈 集客コンサルAI")
 st.caption("業種・目標・予算・地域・ペルソナを入れるだけ。7日間の具体アクションを自動生成。")
 
-def mark_invalid(anchor_id: str, kind: str, msg: str):
-    """
-    kind: "select" | "number" | "text" | "textarea"
-    直前に置いた #<anchor_id> の “次のウィジェット” を赤枠化 + メッセージ表示
-    """
-    # ウィジェットの直後の実DOMを狙うCSS（安定しやすいセレクタを採用）
-    if kind == "select":
-        css = f"#{anchor_id} + div [data-baseweb='select'] > div {{ border:2px solid #ef4444 !important; border-radius:8px !important; }}"
-    elif kind == "number":
-        css = f"#{anchor_id} + div input {{ border:2px solid #ef4444 !important; border-radius:8px !important; }}"
-    elif kind == "text":
-        css = f"#{anchor_id} + div input {{ border:2px solid #ef4444 !important; border-radius:8px !important; }}"
-    else:  # textarea
-        css = f"#{anchor_id} + div textarea {{ border:2px solid #ef4444 !important; border-radius:8px !important; }}"
-    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
-    st.markdown(f"<div class='validation-msg'>⚠️ {msg} を入力してください</div>", unsafe_allow_html=True)
+if "step" not in st.session_state: st.session_state.step = "input"
+if "form_data" not in st.session_state: st.session_state.form_data = {}
+if "plan_md" not in st.session_state: st.session_state.plan_md = ""
 
 if st.session_state.step == "input":
     with st.container():
         st.markdown('<div class="card">', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("業種<span class='badge-required'>必須</span>", unsafe_allow_html=True)
+            industry = st.selectbox("", ["飲食","美容・サロン","クリニック","フィットネス","EC/物販","B2B","不動産","教育","その他"], index=0, label_visibility="collapsed")
+        with c2:
+            st.markdown("目標<span class='badge-required'>必須</span>", unsafe_allow_html=True)
+            goal = st.selectbox("", ["予約","問い合わせ","資料請求","売上","リード獲得"], label_visibility="collapsed")
 
-        col1, col2 = st.columns(2)
-
-        # ---- アンカー置き場（各ウィジェットの直前に配置） ----
-        with col1:
-            st.markdown("<span id='anc-industry'></span>", unsafe_allow_html=True)
-            industry = st.selectbox("業種", options=list(INDUSTRY_HINTS.keys()) + ["不動産","教育","その他"], index=0, key="industry")
-        with col2:
-            st.markdown("<span id='anc-goal'></span>", unsafe_allow_html=True)
-            goal = st.selectbox("目標", ["予約","問い合わせ","資料請求","売上","リード獲得"], key="goal")
-
-        col3, col4 = st.columns(2)
-        with col3:
-            st.markdown("<span id='anc-budget'></span>", unsafe_allow_html=True)
-            budget = st.number_input("月間予算（円）", min_value=10000, step=10000, value=100000, key="budget")
-        with col4:
-            st.markdown("<span id='anc-region'></span>", unsafe_allow_html=True)
-            region = st.text_input("地域（市区町村/エリア）", value="東京都内", key="region")
-
-        st.markdown("<span id='anc-persona'></span>", unsafe_allow_html=True)
-        persona = st.text_area("ペルソナ（属性/悩み/行動）", placeholder="例：30代女性。仕事帰りに寄れる/時短重視。SNSで口コミをよく見る", key="persona")
-
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown("月間予算（円）<span class='badge-required'>必須</span>", unsafe_allow_html=True)
+            budget = st.number_input("", min_value=10000, step=10000, value=100000, label_visibility="collapsed")
+        with c4:
+            st.markdown("地域（市区町村/エリア）<span class='badge-required'>必須</span>", unsafe_allow_html=True)
+            region = st.text_input("", value="東京都内", label_visibility="collapsed")
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # 入力画面にも動画広告
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        st.markdown("<div class='ad'><small>スポンサー動画</small>", unsafe_allow_html=True); 
-        st.video(random.choice(["https://www.w3schools.com/html/mov_bbb.mp4","https://www.w3schools.com/html/movie.mp4"]))
-        st.markdown("</div>", unsafe_allow_html=True)
+        # Persona
+        persona = persona_builder(industry)
 
-        # ---- 未入力チェック ----
+        # 未入力チェック
         missing = []
-        if not industry: missing.append(("anc-industry","select","業種"))
-        if not goal: missing.append(("anc-goal","select","目標"))
-        if not budget: missing.append(("anc-budget","number","予算"))
-        if not region: missing.append(("anc-region","text","地域"))
-        if not persona: missing.append(("anc-persona","textarea","ペルソナ"))
+        if not industry: missing.append("業種")
+        if not goal: missing.append("目標")
+        if not budget: missing.append("予算")
+        if not region: missing.append("地域")
+        if not persona.strip(): missing.append("ペルソナ")
         disabled = len(missing) > 0
 
-        # 元の「作成」ボタン
+        # CTAボタン
         if st.button("7日間プランを作成", use_container_width=True, disabled=disabled):
-            st.session_state.form_data = {"industry": industry, "goal": goal, "budget": int(budget), "region": region, "persona": persona}
-            st.session_state.ad_started_at = time.time()
-            st.session_state.step = "ad"
-            st.experimental_rerun()
+            st.session_state.form_data = {"industry":industry,"goal":goal,"budget":int(budget),"region":region,"persona":persona}
+            st.session_state.ad_started_at = time.time(); st.session_state.step = "ad"; st.experimental_rerun()
 
-        # フッターCTA（押せる版）
+        # 押せるフッターCTA
         st.markdown("<div class='footer-cta'><a href='?cta=1'><div class='footer-cta-inner'>無料で今すぐ作成 ▶</div></a></div>", unsafe_allow_html=True)
-
-        # CTAリンクから来たとき
         q = st.query_params
         if q.get("cta") == "1":
             if disabled:
-                # どれが未入力かを個別に赤枠化＋トースト
-                for aid, kind, label in missing: mark_invalid(aid, kind, label)
-                st.toast("未入力の項目があります。赤枠の欄を入力してください。", icon="⚠️")
+                st.toast(f"未入力: {', '.join(missing)}", icon="⚠️")
             else:
-                st.session_state.form_data = {"industry": industry, "goal": goal, "budget": int(budget), "region": region, "persona": persona}
+                st.session_state.form_data = {"industry":industry,"goal":goal,"budget":int(budget),"region":region,"persona":persona}
                 st.session_state.ad_started_at = time.time(); st.session_state.step = "ad"
                 st.query_params.clear(); st.experimental_rerun()
-
-        # 入力途中でも、現時点で未入力があれば赤枠ヒントを出す（任意：軽く導線）
-        for aid, kind, label in missing: 
-            mark_invalid(aid, kind, label)
 
 elif st.session_state.step == "ad":
     st.header("少々お待ちください…結果を準備中")
     st.caption("スポンサー動画が流れます。数秒後に結果ページへ進めます。")
     st.video(random.choice(["https://www.w3schools.com/html/mov_bbb.mp4","https://www.w3schools.com/html/movie.mp4"]))
+
     elapsed = int(time.time() - (st.session_state.ad_started_at or time.time()))
-    remain = max(0, AD_MIN_SECONDS - elapsed)
+    remain = max(0, 6 - elapsed)
     btn_label = "結果へ進む" if remain == 0 else f"{remain}秒後に進む"
-    if st.button(btn_label, use_container_width=True, disabled=(remain > 0)):
-        d = st.session_state.form_data; pro = (st.session_state.tier == "pro") or (st.session_state.user and st.session_state.user.get("pro"))
-        try:
-            st.session_state.plan_md = llm_markdown(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro) if USE_LLM else \
-                                       rule_based_markdown(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro)
-        except Exception:
+    if st.button(btn_label, use_container_width=True, disabled=(remain>0)):
+        d = st.session_state.form_data
+        pro = True  # PRO相当の詳細版（必要に応じてフラグで分岐）
+        if USE_LLM and OpenAI:
+            try:
+                st.session_state.plan_md = llm_markdown(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro)
+            except Exception:
+                st.session_state.plan_md = rule_based_markdown(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro)
+        else:
             st.session_state.plan_md = rule_based_markdown(d["industry"], d["goal"], d["budget"], d["region"], d["persona"], pro)
         st.session_state.step = "result"; st.experimental_rerun()
-    if remain > 0:
+    if remain>0:
         time.sleep(1); st.experimental_rerun()
 
 else:
     md = st.session_state.plan_md
     if not md: st.warning("先に入力から開始してください。"); st.stop()
-    st.subheader("✅ 7日間アクションプラン"); st.markdown(md)
-    if sb and st.session_state.user and st.session_state.user.get("id") not in (None, "guest"):
-        if st.button("このプランを保存", use_container_width=True):
-            try:
-                sb.table("plans").insert({"user_id": st.session_state.user["id"], "form": st.session_state.form_data, "plan_md": md}).execute(); st.success("保存しました")
-            except Exception as e: st.error(f"保存に失敗: {e}")
-    st.download_button("Markdown をダウンロード", data=md.encode("utf-8"), file_name="7day_plan.md", mime="text/markdown", use_container_width=True)
+    st.subheader("✅ 7日間アクションプラン")
+    st.markdown(md)
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("条件を変えて再作成", use_container_width=True): st.session_state.step = "input"; st.experimental_rerun()
+        if st.button("条件を変えて再作成", use_container_width=True):
+            st.session_state.step = "input"; st.experimental_rerun()
     with col2:
-        if st.session_state.tier == "free" and not (st.session_state.user and st.session_state.user.get("pro")): st.info("PRO を購入すると、詳細チェックやAB設計が追加されます。サイドバーから決済へ。")
-        else: st.success("PRO 機能が有効です。")
+        st.download_button("Markdown をダウンロード", data=md.encode("utf-8"), file_name="7day_plan.md", mime="text/markdown", use_container_width=True)
