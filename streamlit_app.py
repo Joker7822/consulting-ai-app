@@ -12,67 +12,22 @@ import streamlit as st
 st.set_page_config(
     page_title="集客コンサルAI",
     page_icon="📈",
-    layout="centered",  # モバイルで見やすい
+    layout="centered",
 )
 
 # シンプルなモバイル最適化CSS
 st.markdown("""
 <style>
-/* 全体のフォントと余白 */
-html, body, [class*="css"]  {
-  font-size: 16px;
-}
-
-/* 入力コンポーネントのタップ領域拡大 */
+html, body, [class*="css"]  { font-size: 16px; }
 .stButton>button, .stTextInput input, .stSelectbox select, .stNumberInput input, .stTextArea textarea {
-  min-height: 48px;
-  font-size: 16px;
+  min-height: 48px; font-size: 16px;
 }
-
-/* カード風コンテナ */
-.card {
-  border: 1px solid #e8e8e8;
-  border-radius: 12px;
-  padding: 14px;
-  margin: 8px 0;
-  background: white;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-}
-
-/* 見出しを少し大きく */
-h1, h2, h3 {
-  line-height: 1.3;
-}
-
-/* ステップインジケーター */
-.step {
-  display: inline-block; 
-  padding: 4px 10px; 
-  border-radius: 999px; 
-  background: #f2f4f7; 
-  margin-right: 8px; 
-  font-size: 13px;
-}
-
-/* 広告カード */
-.ad {
-  border: 1px dashed #c9c9c9;
-  border-radius: 12px;
-  padding: 14px;
-  margin: 8px 0;
-  background: #fffef7;
-}
-
-/* フッターの注意書き */
-.small {
-  color:#6b7280; 
-  font-size: 12px;
-}
-
-/* モバイル微調整 */
-@media (max-width: 480px) {
-  html, body, [class*="css"]  { font-size: 17px; }
-}
+.card { border: 1px solid #e8e8e8; border-radius: 12px; padding: 14px; margin: 8px 0; background: white; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+h1, h2, h3 { line-height: 1.3; }
+.step { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #f2f4f7; margin-right: 8px; font-size: 13px; }
+.ad { border: 1px dashed #c9c9c9; border-radius: 12px; padding: 14px; margin: 8px 0; background: #fffef7; }
+.small { color:#6b7280; font-size: 12px; }
+@media (max-width: 480px) { html, body, [class*="css"]  { font-size: 17px; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -87,6 +42,10 @@ if "is_paid" not in st.session_state:
     st.session_state.is_paid = False
 if "ad_started_at" not in st.session_state:
     st.session_state.ad_started_at = None
+
+def goto(page_name: str):
+    st.session_state.page = page_name
+    st.rerun()
 
 # ----------------------------------
 # 無料/有料 判定
@@ -119,7 +78,7 @@ with st.sidebar:
     st.markdown("- 7日フルプラン（無料は3日まで）\n- チャネル別の詳細タスク\n- KPIと目標値の自動提案\n- UTMリンクビルダー\n- 投稿文・見出しのAI生成（オフライン簡易版）")
 
 # ----------------------------------
-# ルールベースの簡易生成器（オフラインで動作）
+# ルールベースの簡易生成器（オフライン）
 # ----------------------------------
 CHANNEL_TIPS = {
     "SNS(Instagram/Threads/X等)": [
@@ -160,7 +119,6 @@ def generate_7day_plan(inputs: dict, days: int = 7) -> list:
     strength = inputs.get("strength", "")
     weakness = inputs.get("weakness", "")
 
-    # 日ごとのテーマ
     themes = [
         "戦略設計とKPI設定",
         "ターゲットと価値提案の明確化",
@@ -177,7 +135,7 @@ def generate_7day_plan(inputs: dict, days: int = 7) -> list:
         d = start + timedelta(days=i)
         day_channels = channels if channels else ["SNS(Instagram/Threads/X等)"]
         channel_tip_lines = []
-        for ch in day_channels[:3]:  # 多すぎないように最大3チャネル
+        for ch in day_channels[:3]:
             tips = CHANNEL_TIPS.get(ch, CHANNEL_TIPS["SNS(Instagram/Threads/X等)"])
             sample = random.sample(tips, k=min(2, len(tips)))
             channel_tip_lines.append(f"【{ch}】" + " / ".join(sample))
@@ -189,7 +147,6 @@ def generate_7day_plan(inputs: dict, days: int = 7) -> list:
             *channel_tip_lines
         ]
 
-        # 簡易KPI案
         kpi = []
         if "広告" in "".join(day_channels):
             kpi.append("CTR 1.5% / CVR 3% を初期目標")
@@ -199,7 +156,7 @@ def generate_7day_plan(inputs: dict, days: int = 7) -> list:
             kpi.append("直帰率 < 60% / 平均滞在時間 > 1:20")
 
         plan.append({
-            "day": f"{i+1}日目 ({d.strftime('%-m/%-d')})",
+            "day": f"{i+1}日目 ({d.strftime('%-m/%-d') if hasattr(d, 'strftime') else d.strftime('%m/%d')})",
             "theme": themes[i] if i < len(themes) else "最適化の継続",
             "tasks": tasks,
             "kpi": kpi or ["KPI: 目標指標を1つに絞って追う"],
@@ -207,7 +164,6 @@ def generate_7day_plan(inputs: dict, days: int = 7) -> list:
     return plan
 
 def simple_copy_suggestions(inputs: dict, n: int = 5) -> list:
-    """オフライン簡易コピー生成（テンプレベース）"""
     product = inputs.get("product", "サービス")
     target = inputs.get("target", "あなた")
     usp = inputs.get("strength", "強み")
@@ -281,18 +237,20 @@ def render_input():
                 "strength": strength,
                 "weakness": weakness,
             }
-            st.session_state.page = "ad"
             st.session_state.ad_started_at = time.time()
-            st.experimental_rerun()
+            goto("ad")
 
 # ----------------------------------
 # 広告インタースティシャル（Step 2）
 # ----------------------------------
 def render_ad():
+    # 入力ガード
+    if not st.session_state.inputs:
+        goto("input")
+
     st.markdown('<span class="step">STEP 2</span> お知らせ（スポンサー）', unsafe_allow_html=True)
     st.markdown("結果の準備中…以下のスポンサーからのお知らせをご覧ください。")
 
-    # デモ用の広告カード
     ads = [
         {"title": "📣 SNS運用テンプレ100選", "desc": "今すぐ使える投稿ネタ集（無料）", "cta": "ダウンロード"},
         {"title": "🎯 小予算でも効く広告講座", "desc": "1日30分で学べる実践講座", "cta": "詳細を見る"},
@@ -307,32 +265,48 @@ def render_ad():
             st.button(f"{ad['cta']} →", key=f"ad_{ad['title']}_{random.randint(1,9999)}")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # 3秒カウントダウン後に結果へ
-    placeholder = st.empty()
-    total = 3
-    while True:
-        elapsed = int(time.time() - (st.session_state.ad_started_at or time.time()))
-        remain = max(0, total - elapsed)
-        placeholder.info(f"結果へ自動的に移動します… {remain} 秒")
-        if remain <= 0:
-            st.session_state.page = "result"
-            st.experimental_rerun()
-        time.sleep(0.5)
+    # --- カウントダウンと安全な自動遷移 ---
+    min_view = 3  # 秒
+    if st.session_state.ad_started_at is None:
+        st.session_state.ad_started_at = time.time()
+
+    elapsed = int(time.time() - st.session_state.ad_started_at)
+    remain = max(0, min_view - elapsed)
+
+    st.info(f"結果へ自動的に移動します… {remain} 秒")
+
+    # 一定間隔で画面を再描画（ブロッキング無し）
+    if hasattr(st, "autorefresh"):
+        st.autorefresh(interval=500, limit=20, key="ad_refresh_key")  # 0.5秒ごとに再描画
+
+    colA, colB = st.columns(2)
+    with colA:
+        st.button("スポンサーをもう一つ見る 🔁")
+    with colB:
+        disabled = remain > 0
+        if st.button("広告を閉じて結果へ ▶", disabled=disabled):
+            goto("result")
+
+    # 自動遷移（最小表示時間を過ぎたら）
+    if remain <= 0:
+        goto("result")
 
 # ----------------------------------
 # 結果（Step 3）
 # ----------------------------------
 def render_result():
+    if not st.session_state.inputs:
+        goto("input")
+
     st.markdown('<span class="step">STEP 3</span> 7日間アクションプラン', unsafe_allow_html=True)
 
     inputs = st.session_state.inputs
     is_paid = st.session_state.is_paid
 
     days = 7 if is_paid else 3
-    plan = generate_7day_plan(inputs, days=7)  # まずフルで生成
+    plan = generate_7day_plan(inputs, days=7)  # フル生成
     visible_plan = plan[:days]
 
-    # 概要
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("🔎 診断サマリー")
     st.write(f"- **業種**: {inputs.get('industry')}｜**地域**: {inputs.get('region')}")
@@ -341,7 +315,6 @@ def render_result():
     st.write(f"- **活用チャネル**: {', '.join(inputs.get('channels') or ['未選択'])}")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # プラン表示
     st.subheader("📅 7日間プラン（無料は3日分）")
     for day in visible_plan:
         with st.container():
@@ -355,7 +328,6 @@ def render_result():
                 st.write("- " + k)
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # データ出力
     df = pd.DataFrame([
         {"day": d["day"], "theme": d["theme"], "tasks": " / ".join(d["tasks"]), "kpi": " / ".join(d["kpi"])}
         for d in visible_plan
@@ -363,7 +335,6 @@ def render_result():
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button("CSVでダウンロード", data=csv, file_name="7day_plan.csv", mime="text/csv")
 
-    # 有料機能
     if is_paid:
         st.markdown("## ⭐ 有料機能")
         with st.expander("AI投稿文/見出しサジェスト（簡易）"):
@@ -387,14 +358,11 @@ def render_result():
                 st.markdown(f"**{ch}**")
                 for tip in CHANNEL_TIPS.get(ch, []):
                     st.write("- " + tip)
-
     else:
         st.info("残りの4日間と詳細は有料プランでご利用いただけます。サイドバーから有料コードを有効化してください。")
 
-    # 戻る
     if st.button("◀ 入力に戻る"):
-        st.session_state.page = "input"
-        st.experimental_rerun()
+        goto("input")
 
 # ----------------------------------
 # 画面遷移
@@ -406,6 +374,5 @@ elif st.session_state.page == "ad":
 else:
     render_result()
 
-# フッター
 st.markdown("---")
 st.markdown('<p class="small">※ 本ツールはデモです。KPIや施策は一般的な初期目安であり、結果を保証するものではありません。</p>', unsafe_allow_html=True)
