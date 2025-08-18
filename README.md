@@ -1,34 +1,38 @@
-# 集客コンサルAI（Streamlit）
+# 集客コンサルAI（LLM搭載・Streamlit）
 
-日本語UIで「業種・目標・予算・地域・ペルソナ」を入れるだけで **7日間アクションプラン**を自動生成。
-- 無料/PROの差分（PROは詳細チェックやABテスト設計など）
-- **Stripe Checkout** 決済 → 成功時に PRO 付与
-- **Supabase** で会員化＆プラン保存
-- 入力→**動画広告**→結果の3ステップ（インタースティシャル広告）
-- **裏コマンド**：サイドバーの「バージョン情報（7回で秘密）」を7回タップで **7日間だけPRO解放**
+- 無料/PRO差別化、Stripe課金、Supabase会員化、動画広告インタースティシャル、裏コマンド（7タップで7日PRO）
+- **LLM生成**（OpenAI）：`OPENAI_API_KEY` を `.streamlit/secrets.toml` に設定し、`USE_LLM=true` で有効化
+- LLM失敗時はルールベースに自動フォールバック
 
 ## セットアップ
-
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-### .streamlit/secrets.toml
-`.streamlit/secrets.toml` を作成して以下を設定してください（サンプルは `.streamlit/secrets.toml.sample` 参照）。
+### .streamlit/secrets.toml（例）
+```toml
+# Stripe
+STRIPE_SECRET_KEY = "sk_test_xxx"
+STRIPE_PUBLISHABLE_KEY = "pk_test_xxx"
+STRIPE_PRICE_ID = "price_xxx"
+STRIPE_DOMAIN = "http://localhost:8501"
+STRIPE_SUCCESS_PATH = "/?paid=1"
+STRIPE_CANCEL_PATH = "/?canceled=1"
 
-### Supabase
-- Auth: Email/Password（またはGoogle/OAuth）を有効化
-- テーブルとRLSは `supabase_schema.sql` を参考に作成
+# Supabase
+SUPABASE_URL = "https://xxxx.supabase.co"
+SUPABASE_ANON_KEY = "public-anon-key"
 
-### Stripe
-- 商品/PRICEを作成し、`STRIPE_PRICE_ID` を設定
-- Checkout成功/キャンセルURLを `STRIPE_DOMAIN` + パスで指定
-- さらに堅牢にするなら Webhook で `checkout.session.completed` を検証して `profiles.pro=true` を更新
+# LLM
+OPENAI_API_KEY = "sk-..."
+OPENAI_MODEL = "gpt-4o-mini"
+USE_LLM = true
+
+# Demo（本番は無効化）
+PRO_UNLOCK_CODE = "PRO-2025"
+```
 
 ## デプロイ
-- **Streamlit Community Cloud**：このリポジトリを指定するだけ
-- **Docker/他PaaS**：`streamlit run streamlit_app.py` を起動コマンドに設定
-
-## ライセンス
-MIT（必要に応じて変更）
+- GitHubにpush → Streamlit Community Cloudでデプロイ
+- もしくは任意のPaaSで `streamlit run streamlit_app.py`
