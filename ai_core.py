@@ -31,26 +31,17 @@ GLOSSARY = {
     "CVR": "クリックから成約に至る割合。Conversion Rate。",
 }
 
-# =========================
-# 言い回し調整
-# =========================
 def humanize(text: str, tone: str) -> str:
     if tone == "やさしめ": return "😊 " + text
     if tone == "元気に背中押し": return "🔥 " + text + " いけます！"
     return text
 
-# =========================
-# 目標のSMART化
-# =========================
 def smartify_goal(text: str) -> str:
     if not text: return "今週：主要CV 10 件（CTR1.5%・CVR3%・直帰率<60%）"
     m = re.search(r"(\d+)", text)
     num = m.group(1) if m else "10"
     return f"今週：主要CV {num} 件（測定：GA/広告、基準：CTR1.5%・CVR3%・直帰率<60%）"
 
-# =========================
-# ファネル診断（AARRR）
-# =========================
 def funnel_diagnosis(inputs: Dict[str, Any]) -> Dict[str, Any]:
     w = INDUSTRY_WEIGHTS.get(inputs.get("industry","その他"), INDUSTRY_WEIGHTS["その他"])
     def s(k, d=50):
@@ -65,9 +56,6 @@ def funnel_diagnosis(inputs: Dict[str, Any]) -> Dict[str, Any]:
     }
     return {"scores": scores, "bottleneck": min(scores, key=scores.get)}
 
-# =========================
-# KPI逆算（CV→クリック→Imp）
-# =========================
 def kpi_backsolve(inputs: Dict[str, Any]) -> pd.DataFrame:
     text = (inputs.get("goal") or "") + " " + (inputs.get("objective") or "")
     m = re.search(r"(\d+)", text)
@@ -83,9 +71,6 @@ def kpi_backsolve(inputs: Dict[str, Any]) -> pd.DataFrame:
         {"指標":"必要リード/開始数","目標値":leads,"メモ":f"開始率 {int(lead_rate*100)}%想定"},
     ])
 
-# =========================
-# 予算配分（目的×チャネル）
-# =========================
 def budget_allocation(inputs: Dict[str, Any]) -> pd.DataFrame:
     budget = max(0, int(inputs.get("budget", 0)))
     channels = inputs.get("channels", ["SNS","検索","広告","メール/LINE"])[:4]
@@ -106,9 +91,6 @@ def budget_allocation(inputs: Dict[str, Any]) -> pd.DataFrame:
         rows.append({"チャネル": ch, "推奨配分(円/週)": amount, "戦術ヒント": tips})
     return pd.DataFrame(rows)
 
-# =========================
-# 今日/今週/今月アクション
-# =========================
 def three_horizons_actions(inputs: Dict[str, Any], tone: str) -> Dict[str, List[str]]:
     product = inputs.get("product","サービス")
     target = inputs.get("target","あなた")
@@ -131,9 +113,6 @@ def three_horizons_actions(inputs: Dict[str, Any], tone: str) -> Dict[str, List[
     ]
     return {"今日やる": today, "今週やる": this_week, "今月やる": this_month}
 
-# =========================
-# 具体例テンプレ（SNS/広告/LP/DM/電話）
-# =========================
 def concrete_examples(inputs: Dict[str, Any], tone: str) -> Dict[str, str]:
     product = inputs.get("product","サービス")
     usp = inputs.get("strength","強み")
@@ -145,9 +124,6 @@ def concrete_examples(inputs: Dict[str, Any], tone: str) -> Dict[str, str]:
     call = f"本日は“壁を1つ特定して次の1手を決める”がゴールです。質問3つ→結論→次の予定で5分で終わります。"
     return {"SNS投稿": humanize(sns, tone), "広告文": humanize(ad, tone), "LPヒーロー": humanize(lp, tone), "DMテンプレ": humanize(dm, tone), "電話トーク": humanize(call, tone)}
 
-# =========================
-# UTMビルダー
-# =========================
 def build_utm(url: str, source="instagram", medium="social", campaign="launch", content="post") -> str:
     if not url: return ""
     join = "&" if "?" in url else "?"
