@@ -6,7 +6,7 @@ from typing import List, Dict, Any
 import pandas as pd
 import streamlit as st
 
-# AIロジックを分離
+# AIロジック（別ファイル）
 from ai_core import (
     INDUSTRY_WEIGHTS, CHANNEL_TIPS, GLOSSARY,
     humanize, smartify_goal, funnel_diagnosis, kpi_backsolve,
@@ -35,7 +35,7 @@ html, body, [class*="css"]  { font-size: 16px; }
 # セッション初期化
 # =========================
 def ensure_session():
-    st.session_state.setdefault("page", "input")   # "input" -> "ad" -> "result"
+    st.session_state.setdefault("page", "input")   # input -> ad -> result
     st.session_state.setdefault("inputs", {})
     st.session_state.setdefault("is_paid", False)
     st.session_state.setdefault("ad_started_at", None)
@@ -146,11 +146,11 @@ def render_ad():
 
     min_view = 3  # 秒
 
-    # 初回：タイムスタンプを保存して即リラン（カウントダウン開始）
+    # 初回：タイムスタンプを保存して即 rerun（1回だけ）
     if st.session_state.ad_started_at is None:
         st.session_state.ad_started_at = int(time.time())
         st.info(f"結果へ自動的に移動します… {min_view} 秒")
-        st.experimental_rerun()
+        st.rerun()
 
     # 残り秒数の計算
     elapsed = int(time.time() - st.session_state.ad_started_at)
@@ -161,13 +161,12 @@ def render_ad():
     if st.button("広告を閉じて結果へ ▶", disabled=remain > 0):
         goto("result")
 
-    # 自動遷移
+    # 自動遷移 or 1秒ごとに更新
     if remain <= 0:
         goto("result")
     else:
-        # 1秒待ってから強制リラン（JSやautorefreshに頼らない）
-        time.sleep(1)
-        st.experimental_rerun()
+        time.sleep(1)   # サーバー側で1秒待つ
+        st.rerun()      # JSやautorefreshに依存しない確実な更新
 
 # =========================
 # 結果画面
