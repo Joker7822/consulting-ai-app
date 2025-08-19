@@ -74,7 +74,7 @@ with st.sidebar:
 # =========================
 # ヘッダー
 # =========================
-st.title("🤝 集客コンサルAI Pro+")
+st.title("🤝 集客コンサルAI Pro+ (Stable)")
 st.caption("やさしく、でも本格派。数値→計画→実行まで伴走します。")
 
 # =========================
@@ -123,10 +123,11 @@ def render_input():
             goto("ad")
 
 # =========================
-# 広告インタースティシャル（安定版）
+# 広告インタースティシャル（“確実に進む”安定版）
 # =========================
 def render_ad():
-    if not st.session_state.inputs: goto("input")
+    if not st.session_state.inputs:
+        goto("input")
 
     st.markdown('<span class="step">STEP 2</span> お知らせ（スポンサー）', unsafe_allow_html=True)
     st.markdown("結果の準備中…スポンサーからのお知らせをご覧ください。")
@@ -138,33 +139,42 @@ def render_ad():
     ]
     random.shuffle(ads)
     for ad in ads:
-        st.markdown(f"""<div class="ad"><strong>{ad["title"]}</strong><div>{ad["desc"]}</div></div>""", unsafe_allow_html=True)
+        st.markdown(
+            f"""<div class="ad"><strong>{ad["title"]}</strong><div>{ad["desc"]}</div></div>""",
+            unsafe_allow_html=True
+        )
 
-    # --- 安定カウントダウン: st.autorefresh を使用 ---
     min_view = 3  # 秒
+
+    # 初回：タイムスタンプを保存して即リラン（カウントダウン開始）
     if st.session_state.ad_started_at is None:
         st.session_state.ad_started_at = int(time.time())
+        st.info(f"結果へ自動的に移動します… {min_view} 秒")
+        st.experimental_rerun()
 
+    # 残り秒数の計算
     elapsed = int(time.time() - st.session_state.ad_started_at)
     remain = max(0, min_view - elapsed)
     st.info(f"結果へ自動的に移動します… {remain} 秒")
 
-    if hasattr(st, "autorefresh"):
-        st.autorefresh(interval=1000, limit=remain, key="ad_timer_key")
-    else:
-        st.markdown("""<script>setTimeout(function(){ if (window && window.location) window.location.reload(); }, 1000);</script>""", unsafe_allow_html=True)
-
+    # 手動スキップ（remain=0で有効化）
     if st.button("広告を閉じて結果へ ▶", disabled=remain > 0):
         goto("result")
 
+    # 自動遷移
     if remain <= 0:
         goto("result")
+    else:
+        # 1秒待ってから強制リラン（JSやautorefreshに頼らない）
+        time.sleep(1)
+        st.experimental_rerun()
 
 # =========================
 # 結果画面
 # =========================
 def render_result():
-    if not st.session_state.inputs: goto("input")
+    if not st.session_state.inputs:
+        goto("input")
     inputs = st.session_state.inputs
     tone = st.session_state.get("tone", "やさしめ")
 
