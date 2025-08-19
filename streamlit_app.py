@@ -155,8 +155,11 @@ def generate_7day_plan(inputs: dict, days: int = 7) -> list:
         if "検索" in "".join(day_channels):
             kpi.append("直帰率 < 60% / 平均滞在時間 > 1:20")
 
+        # 日付表示はOS差違が出ないよう month/day で
+        day_label = f"{i+1}日目 ({d.month}/{d.day})"
+
         plan.append({
-            "day": f"{i+1}日目 ({d.strftime('%-m/%-d') if hasattr(d, 'strftime') else d.strftime('%m/%d')})",
+            "day": day_label,
             "theme": themes[i] if i < len(themes) else "最適化の継続",
             "tasks": tasks,
             "kpi": kpi or ["KPI: 目標指標を1つに絞って追う"],
@@ -244,7 +247,7 @@ def render_input():
 # 広告インタースティシャル（Step 2）
 # ----------------------------------
 def render_ad():
-    # 入力ガード
+    # 入力ガード：未入力で来たら戻す
     if not st.session_state.inputs:
         goto("input")
 
@@ -275,9 +278,21 @@ def render_ad():
 
     st.info(f"結果へ自動的に移動します… {remain} 秒")
 
-    # 一定間隔で画面を再描画（ブロッキング無し）
+    # まずはStreamlitの自動再描画（新しめの環境）
     if hasattr(st, "autorefresh"):
-        st.autorefresh(interval=500, limit=20, key="ad_refresh_key")  # 0.5秒ごとに再描画
+        st.autorefresh(interval=500, limit=20, key="ad_refresh_key")
+
+    # フォールバック：JSで0.5秒ごとに再描画（古い/制限環境でも動く）
+    st.markdown(
+        """
+        <script>
+        setTimeout(function(){
+            if (window && window.location) { window.location.reload(); }
+        }, 500);
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
 
     colA, colB = st.columns(2)
     with colA:
