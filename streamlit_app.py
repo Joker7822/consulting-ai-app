@@ -7,9 +7,9 @@ import pandas as pd
 import streamlit as st
 
 # AIロジック（別ファイル）
-from ai_core import (
+from ai_core_plus import (
     INDUSTRY_WEIGHTS, CHANNEL_TIPS, GLOSSARY,
-    humanize, smartify_goal, funnel_diagnosis, kpi_backsolve,
+    humanize, smartify_goal, funnel_diagnosis, kpi_backsolve, explain_terms,
     budget_allocation, three_horizons_actions, concrete_examples, build_utm
 )
 
@@ -70,6 +70,9 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**有料で解放**")
     st.markdown("- 7日フルプラン（無料は3日）\n- SMART目標の自動整形\n- 予算配分（目的×チャネル）詳細\n- LP改善チェックリスト拡張（30項目）\n- 実験ロードマップ（優先度/工数/仮説）\n- 具体例：投稿/広告/LP/DM/電話トーク")
+
+    explain = st.checkbox("専門用語に解説を付ける", value=True)
+    st.session_state["explain_terms"] = explain
 
 # =========================
 # ヘッダー
@@ -203,20 +206,26 @@ def render_result():
     st.dataframe(alloc_df, hide_index=True, use_container_width=True)
 
     st.markdown("### 今日/今週/今月の3段階アクション")
-    acts = three_horizons_actions(inputs, tone)
+    acts = three_horizons_actions(inputs, tone, with_reason=True)
     for h in ["今日やる", "今週やる", "今月やる"]:
         st.markdown(f"**{h}**")
         for line in acts[h]:
-            st.write("- " + line)
+            line_show = explain_terms(line, st.session_state.get("explain_terms", True))
+            st.write("- " + line_show)
 
     st.markdown("### 具体例（コピーテンプレ/トーク）")
     ex = concrete_examples(inputs, tone)
-    st.write(f"**SNS投稿例**：{ex['SNS投稿']}")
-    st.write(f"**広告文例**：{ex['広告文']}")
-    st.write(f"**LPヒーロー案**：{ex['LPヒーロー']}")
+    st.write("**SNS投稿例**：", explain_terms(ex["SNS投稿"], st.session_state.get("explain_terms", True)))
+    st.caption(ex["SNSポイント"])
+    st.write("**広告文例**：", explain_terms(ex["広告文"], st.session_state.get("explain_terms", True)))
+    st.caption(ex["広告ポイント"])
+    st.write("**LPヒーロー案**：", explain_terms(ex["LPヒーロー"], st.session_state.get("explain_terms", True)))
+    st.caption(ex["LPポイント"])
     with st.expander("DMテンプレ / 電話トーク"):
-        st.write("**DMテンプレ**：", ex["DMテンプレ"])
-        st.write("**電話トーク**：", ex["電話トーク"])
+        st.write("**DMテンプレ**：", explain_terms(ex["DMテンプレ"], st.session_state.get("explain_terms", True)))
+        st.caption(ex["DMポイント"])
+        st.write("**電話トーク**：", explain_terms(ex["電話トーク"], st.session_state.get("explain_terms", True)))
+        st.caption(ex["電話ポイント"])
 
     # ダウンロード（アクションCSV）
     rows = []
