@@ -1,17 +1,64 @@
 import os
 import time
 import random
+import inspect
 from typing import List, Dict, Any
 
 import pandas as pd
 import streamlit as st
 
-# AIロジック（別ファイル）
-from ai_core_plus import (
-    INDUSTRY_WEIGHTS, CHANNEL_TIPS, GLOSSARY,
-    humanize, smartify_goal, funnel_diagnosis, kpi_backsolve, explain_terms,
-    budget_allocation, three_horizons_actions, concrete_examples, build_utm, dynamic_advice
-)
+# =========================================================
+# モジュール読込（ai_core_plus → 失敗なら ai_core に自動フォールバック）
+# =========================================================
+try:
+    from ai_core_plus import (
+        INDUSTRY_WEIGHTS, CHANNEL_TIPS, GLOSSARY,
+        humanize, smartify_goal, funnel_diagnosis, kpi_backsolve, explain_terms,
+        budget_allocation, three_horizons_actions, concrete_examples, build_utm, dynamic_advice
+    )
+    USING_PLUS = True
+except ModuleNotFoundError:
+    from ai_core import (
+        INDUSTRY_WEIGHTS, CHANNEL_TIPS, GLOSSARY,
+        humanize, smartify_goal, funnel_diagnosis, kpi_backsolve,
+        budget_allocation, three_horizons_actions, concrete_examples, build_utm
+    )
+    USING_PLUS = False
+
+    # 互換：explain_terms が無ければ素通し
+    def explain_terms(text: str, enabled: bool = True) -> str:
+        return text
+
+    # 互換：dynamic_advice が無ければ three_horizons_actions を利用した簡易版
+    def dynamic_advice(inputs: Dict[str, Any], tone: str, variant_seed: int | None = None, emoji_rich: bool = True):
+        rng = random.Random(variant_seed)
+        # three_horizons_actions に with_reason があるかを判定
+        has_with_reason = "with_reason" in three_horizons_actions.__code__.co_varnames
+        acts = three_horizons_actions(inputs, tone, with_reason=True) if has_with_reason else three_horizons_actions(inputs, tone)
+        head_opts = [
+            "まずはここからいきましょう！一番のボトルネックに効く所です。",
+            "今日サクッと進められる2つ、ピックしました。",
+            "ムリなく効かせる次の一手です。"
+        ]
+        closer_opts = [
+            "無理なく“今日できる2つ”から積み上げましょう。",
+            "迷ったら、ボトルネックに効く打ち手を最優先で。",
+            "成果が出たらテンプレ化して再現性を作りましょう。"
+        ]
+        return {
+            "ヘッダー": rng.choice(head_opts),
+            "今日やる": acts.get("今日やる", []),
+            "今週やる": acts.get("今週やる", []),
+            "今月やる": acts.get("今月やる", []),
+            "ひとこと": rng.choice(closer_opts),
+        }
+
+# three_horizons_actions が with_reason に対応していない場合に備えるヘルパー
+def th_actions_safe(inputs: Dict[str, Any], tone: str, with_reason: bool = False):
+    if "with_reason" in three_horizons_actions.__code__.co_varnames:
+        return three_horizons_actions(inputs, tone, with_reason=with_reason)
+    else:
+        return three_horizons_actions(inputs, tone)
 
 # =========================
 # ページ設定（スマホ向け）
@@ -28,6 +75,7 @@ html, body, [class*="css"]  { font-size: 16px; }
 .small { color:#6b7280; font-size:12px; }
 .step { display:inline-block; padding:4px 10px; border-radius:999px; background:#f2f4f7; margin-right:8px; font-size:13px; }
 .ad { border:1px dashed #c9c9c9; border-radius:12px; padding:14px; margin:8px 0; background:#fffef7; }
+.badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; margin-left:8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -40,7 +88,10 @@ def ensure_session():
     st.session_state.setdefault("is_paid", False)
     st.session_state.setdefault("ad_started_at", None)
     st.session_state.setdefault("tone", "やさしめ")
-    st.session_state.setdefault('variant_seed', 0)
+    st.session_state.setdefault("variant_seed", 0)
+    st.session_state.setdefault("explain_terms", True)
+    st.session_state.setdefault("friendly", True)
+    st.session_state.setdefault("emoji_rich", True)
 
 ensure_session()
 
@@ -72,19 +123,18 @@ with st.sidebar:
     st.markdown("**有料で解放**")
     st.markdown("- 7日フルプラン（無料は3日）\n- SMART目標の自動整形\n- 予算配分（目的×チャネル）詳細\n- LP改善チェックリスト拡張（30項目）\n- 実験ロードマップ（優先度/工数/仮説）\n- 具体例：投稿/広告/LP/DM/電話トーク")
 
-    explain = st.checkbox("専門用語に解説を付ける", value=True)
-    st.session_state["explain_terms"] = explain
-    
-    friendly = st.checkbox("親しみやすさブースト", value=True)
-    emoji_rich = st.checkbox("絵文字ちょい多め", value=True)
-    st.session_state["friendly"] = friendly
-    st.session_state["emoji_rich"] = emoji_rich
+    st.session_state["explain_terms"] = st.checkbox("専門用語に解説を付ける", value=st.session_state["explain_terms"])
+    st.session_state["friendly"] = st.checkbox("親しみやすさブースト", value=st.session_state["friendly"])
+    st.session_state["emoji_rich"] = st.checkbox("絵文字ちょい多め", value=st.session_state["emoji_rich"])
 
 # =========================
 # ヘッダー
 # =========================
 st.title("🤝 集客コンサルAI Pro+ (Stable)")
-st.caption("やさしく、でも本格派。数値→計画→実行まで伴走します。")
+cap = "やさしく、でも本格派。数値→計画→実行まで伴走します。"
+if USING_PLUS:
+    cap += ' <span class="badge">plus</span>'
+st.caption(cap, unsafe_allow_html=True)
 
 # =========================
 # 入力フォーム
@@ -154,28 +204,23 @@ def render_ad():
         )
 
     min_view = 3  # 秒
-
-    # 初回：タイムスタンプを保存して即 rerun（1回だけ）
     if st.session_state.ad_started_at is None:
         st.session_state.ad_started_at = int(time.time())
         st.info(f"結果へ自動的に移動します… {min_view} 秒")
         st.rerun()
 
-    # 残り秒数の計算
     elapsed = int(time.time() - st.session_state.ad_started_at)
     remain = max(0, min_view - elapsed)
     st.info(f"結果へ自動的に移動します… {remain} 秒")
 
-    # 手動スキップ（remain=0で有効化）
     if st.button("広告を閉じて結果へ ▶", disabled=remain > 0):
         goto("result")
 
-    # 自動遷移 or 1秒ごとに更新
     if remain <= 0:
         goto("result")
     else:
-        time.sleep(1)   # サーバー側で1秒待つ
-        st.rerun()      # JSやautorefreshに依存しない確実な更新
+        time.sleep(1)
+        st.rerun()
 
 # =========================
 # 結果画面
@@ -196,6 +241,7 @@ def render_result():
     st.write(f"- **強み/弱み**: {inputs.get('strength')} / {inputs.get('weakness')}")
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ファネル診断
     diag = funnel_diagnosis(inputs)
     st.markdown("### ファネル診断（AARRR）")
     df_scores = pd.DataFrame([diag["scores"]]).T.reset_index()
@@ -212,40 +258,46 @@ def render_result():
         if st.button("別の言い方で見る 🔄"):
             st.session_state['variant_seed'] += 1
             st.rerun()
-    adv = dynamic_advice(inputs, tone, variant_seed=st.session_state.get('variant_seed',0), emoji_rich=st.session_state.get('emoji_rich', True))
+    adv = dynamic_advice(inputs, tone,
+                         variant_seed=st.session_state.get('variant_seed',0),
+                         emoji_rich=st.session_state.get('emoji_rich', True))
     st.info(adv["ヘッダー"])
     st.markdown("**今日やる（すぐ終わる2つ）**")
     for line in adv["今日やる"]:
-        st.write("- " + line)
+        st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
     st.markdown("**今週やる**")
     for line in adv["今週やる"]:
-        st.write("- " + line)
+        st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
     st.markdown("**今月やる**")
     for line in adv["今月やる"]:
-        st.write("- " + line)
-    st.success(adv["ひとこと"])
+        st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
+    st.success(explain_terms(adv["ひとこと"], st.session_state.get("explain_terms", True)))
 
+    # 3段階アクション（理由付き対応に自動フォールバック）
     st.markdown("### 今日/今週/今月の3段階アクション")
-    acts = three_horizons_actions(inputs, tone, with_reason=True)
+    acts = th_actions_safe(inputs, tone, with_reason=True)
     for h in ["今日やる", "今週やる", "今月やる"]:
         st.markdown(f"**{h}**")
-        for line in acts[h]:
-            line_show = explain_terms(line, st.session_state.get("explain_terms", True))
-            st.write("- " + line_show)
+        for line in acts.get(h, []):
+            st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
 
+    # 具体例
     st.markdown("### 具体例（コピーテンプレ/トーク）")
     ex = concrete_examples(inputs, tone)
-    st.write("**SNS投稿例**：", explain_terms(ex["SNS投稿"], st.session_state.get("explain_terms", True)))
-    st.caption(ex["SNSポイント"])
-    st.write("**広告文例**：", explain_terms(ex["広告文"], st.session_state.get("explain_terms", True)))
-    st.caption(ex["広告ポイント"])
-    st.write("**LPヒーロー案**：", explain_terms(ex["LPヒーロー"], st.session_state.get("explain_terms", True)))
-    st.caption(ex["LPポイント"])
+    # 例とポイント（ポイントキーが無くても安全に表示）
+    def getkey(d, k, default=""):
+        return d[k] if k in d else default
+    st.write("**SNS投稿例**：", explain_terms(getkey(ex, "SNS投稿", ""), st.session_state.get("explain_terms", True)))
+    if getkey(ex, "SNSポイント"): st.caption(getkey(ex, "SNSポイント"))
+    st.write("**広告文例**：", explain_terms(getkey(ex, "広告文", ""), st.session_state.get("explain_terms", True)))
+    if getkey(ex, "広告ポイント"): st.caption(getkey(ex, "広告ポイント"))
+    st.write("**LPヒーロー案**：", explain_terms(getkey(ex, "LPヒーロー", ""), st.session_state.get("explain_terms", True)))
+    if getkey(ex, "LPポイント"): st.caption(getkey(ex, "LPポイント"))
     with st.expander("DMテンプレ / 電話トーク"):
-        st.write("**DMテンプレ**：", explain_terms(ex["DMテンプレ"], st.session_state.get("explain_terms", True)))
-        st.caption(ex["DMポイント"])
-        st.write("**電話トーク**：", explain_terms(ex["電話トーク"], st.session_state.get("explain_terms", True)))
-        st.caption(ex["電話ポイント"])
+        st.write("**DMテンプレ**：", explain_terms(getkey(ex, "DMテンプレ", ""), st.session_state.get("explain_terms", True)))
+        if getkey(ex, "DMポイント"): st.caption(getkey(ex, "DMポイント"))
+        st.write("**電話トーク**：", explain_terms(getkey(ex, "電話トーク", ""), st.session_state.get("explain_terms", True)))
+        if getkey(ex, "電話ポイント"): st.caption(getkey(ex, "電話ポイント"))
 
     # KPI逆算（ゴールからバックキャスト）
     st.markdown("### KPI逆算（ゴールからバックキャスト）")
