@@ -10,7 +10,7 @@ import streamlit as st
 from ai_core_plus import (
     INDUSTRY_WEIGHTS, CHANNEL_TIPS, GLOSSARY,
     humanize, smartify_goal, funnel_diagnosis, kpi_backsolve, explain_terms,
-    budget_allocation, three_horizons_actions, concrete_examples, build_utm
+    budget_allocation, three_horizons_actions, concrete_examples, build_utm, dynamic_advice
 )
 
 # =========================
@@ -40,6 +40,7 @@ def ensure_session():
     st.session_state.setdefault("is_paid", False)
     st.session_state.setdefault("ad_started_at", None)
     st.session_state.setdefault("tone", "やさしめ")
+    st.session_state.setdefault('variant_seed', 0)
 
 ensure_session()
 
@@ -73,6 +74,11 @@ with st.sidebar:
 
     explain = st.checkbox("専門用語に解説を付ける", value=True)
     st.session_state["explain_terms"] = explain
+    
+    friendly = st.checkbox("親しみやすさブースト", value=True)
+    emoji_rich = st.checkbox("絵文字ちょい多め", value=True)
+    st.session_state["friendly"] = friendly
+    st.session_state["emoji_rich"] = emoji_rich
 
 # =========================
 # ヘッダー
@@ -197,13 +203,27 @@ def render_result():
     st.dataframe(df_scores, hide_index=True, use_container_width=True)
     st.info(humanize(f"ボトルネック：**{diag['bottleneck']}**。ここに効くタスクからやりましょう。", tone))
 
-    st.markdown("### KPI逆算（ゴールからバックキャスト）")
-    kpi_df = kpi_backsolve(inputs)
-    st.dataframe(kpi_df, hide_index=True, use_container_width=True)
-
-    st.markdown("### 週予算の推奨配分")
-    alloc_df = budget_allocation(inputs)
-    st.dataframe(alloc_df, hide_index=True, use_container_width=True)
+    # 親しみやすいダイナミック提案
+    st.markdown("### 親しみやすいダイナミック提案")
+    c1, c2 = st.columns([4,1])
+    with c1:
+        st.caption("※ ボトルネック・予算・業種を踏まえ、表現を毎回少し変えてご提案します。")
+    with c2:
+        if st.button("別の言い方で見る 🔄"):
+            st.session_state['variant_seed'] += 1
+            st.rerun()
+    adv = dynamic_advice(inputs, tone, variant_seed=st.session_state.get('variant_seed',0), emoji_rich=st.session_state.get('emoji_rich', True))
+    st.info(adv["ヘッダー"])
+    st.markdown("**今日やる（すぐ終わる2つ）**")
+    for line in adv["今日やる"]:
+        st.write("- " + line)
+    st.markdown("**今週やる**")
+    for line in adv["今週やる"]:
+        st.write("- " + line)
+    st.markdown("**今月やる**")
+    for line in adv["今月やる"]:
+        st.write("- " + line)
+    st.success(adv["ひとこと"])
 
     st.markdown("### 今日/今週/今月の3段階アクション")
     acts = three_horizons_actions(inputs, tone, with_reason=True)
@@ -226,6 +246,16 @@ def render_result():
         st.caption(ex["DMポイント"])
         st.write("**電話トーク**：", explain_terms(ex["電話トーク"], st.session_state.get("explain_terms", True)))
         st.caption(ex["電話ポイント"])
+
+    # KPI逆算（ゴールからバックキャスト）
+    st.markdown("### KPI逆算（ゴールからバックキャスト）")
+    kpi_df = kpi_backsolve(inputs)
+    st.dataframe(kpi_df, hide_index=True, use_container_width=True)
+
+    # 週予算の推奨配分
+    st.markdown("### 週予算の推奨配分")
+    alloc_df = budget_allocation(inputs)
+    st.dataframe(alloc_df, hide_index=True, use_container_width=True)
 
     # ダウンロード（アクションCSV）
     rows = []
