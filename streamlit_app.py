@@ -130,7 +130,7 @@ with st.sidebar:
 # =========================
 # ヘッダー
 # =========================
-st.title("🤝 集客コンサルAI Pro+ (Stable)")
+st.title("🤝 集客コンサルAI Pro+")
 cap = "やさしく、でも本格派。数値→計画→実行まで伴走します。"
 if USING_PLUS:
     cap += ' <span class="badge">plus</span>'
