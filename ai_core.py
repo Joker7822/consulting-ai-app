@@ -181,6 +181,113 @@ def concrete_examples(inputs: Dict[str, Any], tone: str) -> Dict[str, str]:
         "電話ポイント": humanize(call_p, tone),
     }
 
+# ===============
+# 親しみやすい動的アドバイス
+# ===============
+def dynamic_advice(inputs: Dict[str, Any], tone: str, variant_seed: int | None = None, emoji_rich: bool = True) -> Dict[str, list[str]]:
+    """ユーザーの入力・ボトルネック・予算・業種から、親しみやすい提案を動的生成。
+    variant_seed が同じなら同じ提案、変えると表現をリフレッシュ。
+    """
+    rnd = random.Random(variant_seed)
+    product = inputs.get("product","サービス")
+    target = inputs.get("target","あなた")
+    industry = inputs.get("industry","その他")
+    budget = int(inputs.get("budget", 0) or 0)
+    diag = funnel_diagnosis(inputs)
+    bottleneck = diag["bottleneck"]
+    
+    # 絵文字セット
+    emos = ["✨","💡","👍","🙌","🎯","🧪","🚀","🛠️","📈","📝"]
+    def e(): return (rnd.choice(emos) + " ") if emoji_rich else ""
+    
+    # 口調テンプレ（親しみやすさ）
+    openers = [
+        f"{e()}まずはここからいきましょう！",
+        f"{e()}ムリなく効かせる次の一手です。",
+        f"{e()}今日サクッとやれるやつ、ピックしました。",
+    ]
+    because = [
+        "一番のボトルネックに効くからです。",
+        "コスパよく成果につながりやすいからです。",
+        "迷いなく手を動かせる具体度だからです。",
+    ]
+    
+    # ボトルネック別の推しタスク候補
+    bn_map = {
+        "Awareness(認知)": [
+            (f"SNS固定投稿を“{product}は誰の何の悩みをどう解決？”に差し替え",
+             "プロフィール→LP への導線も一緒に見直すと効果が上がります。"),
+            ("検索の“悩みワード”を3つ選んで見出し案を出す",
+             "『比較』『やり方』『失敗』などの語を入れるとクリックされやすいです。"),
+        ],
+        "Consideration(検討)": [
+            ("LPのヒーロー見出しを「痛み→ベネフィット」の順でAB案を作成",
+             "見出しは第一印象。数値が動きやすいです。"),
+            (f"よくある質問を5つに絞って、{product}の回答を短く明文化",
+             "不安を先回りで解消すると検討が前に進みます。"),
+        ],
+        "Conversion(成約)": [
+            ("申込ボタンの文言を『無料で試す/30秒で完了』系に変更",
+             "摩擦を下げるとCVRが上がります。"),
+            ("フォームの必須項目を見直して1つ減らす",
+             "入力負荷を下げると離脱が減ります。"),
+        ],
+        "Retention(継続)": [
+            ("オンボ配信（価値→不安解消→締切）の3通をテンプレで用意",
+             "初回体験の質がLTVに直結します。"),
+            (f"『使いこなしチェックリスト』を作り、{target}に送付",
+             "“できた感”が継続の原動力です。"),
+        ],
+        "Referral(紹介)": [
+            ("紹介カードをCanvaで作成（友だち特典＋締切）",
+             "紹介は信頼経由。CVRが高い獲得チャネルです。"),
+            (f"導入事例を1件まとめ、{target}がシェアしやすい要約を作成",
+             "“人は人で動く”。事例は最強の検討材料です。"),
+        ],
+    }
+    # 予算帯別の一言
+    if budget < 30000:
+        budget_tip = "少額なので“無料〜低単価”の打ち手（検索記事/UGC/既存客DM）を厚めに。"
+    elif budget < 100000:
+        budget_tip = "中予算。広告は狭く深く、勝ちLP/勝ち訴求に集中投下しましょう。"
+    else:
+        budget_tip = "十分な予算。広告×CRMの両輪で、認知→検討→成約を繋げ切る設計が◎。"
+    
+    # 候補からランダムにピック
+    picks = bn_map.get(bottleneck, bn_map["Consideration(検討)"])
+    today = []
+    head = random.choice(openers) + " " + random.choice(because)
+    for (task, tip) in random.sample(picks, k=min(2, len(picks))):
+        line = f"{task}｜理由：{tip}"
+        today.append(humanize(f"{e()}{line}", tone))
+    
+    # 今週・今月の提案（軽めのロードマップ）
+    week = [
+        humanize(f"{e()}KPIの見える化：UTMで流入→申込まで計測できるか点検", tone),
+        humanize(f"{e()}ABテスト計画：見出し・CTA・ファーストビューの3点を1週回す", tone),
+    ]
+    month = [
+        humanize(f"{e()}検索記事3本（悩み/比較/HowTo）→内部リンクでLPに誘導", tone),
+        humanize(f"{e()}勝ち投稿のテンプレ化→週2本の定常運用に落とし込む", tone),
+    ]
+    
+    # 仕上げの一言
+    closer = humanize(f"{e()}{budget_tip}", tone)
+    
+    # 用語のやさしい補足（最後にまとめて）
+    today = [explain_terms(t, True) for t in today]
+    week  = [explain_terms(t, True) for t in week]
+    month = [explain_terms(t, True) for t in month]
+    closer = explain_terms(closer, True)
+    
+    return {
+        "ヘッダー": head,
+        "今日やる": today,
+        "今週やる": week,
+        "今月やる": month,
+        "ひとこと": closer,
+    }
+
 def build_utm(url: str, source="instagram", medium="social", campaign="launch", content="post") -> str:
     if not url: return ""
     join = "&" if "?" in url else "?"
