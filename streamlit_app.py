@@ -1,7 +1,6 @@
 import os
 import time
 import random
-import inspect
 from typing import List, Dict, Any
 
 import pandas as pd
@@ -32,7 +31,6 @@ except ModuleNotFoundError:
     # 互換：dynamic_advice が無ければ three_horizons_actions を利用した簡易版
     def dynamic_advice(inputs: Dict[str, Any], tone: str, variant_seed: int | None = None, emoji_rich: bool = True):
         rng = random.Random(variant_seed)
-        # three_horizons_actions に with_reason があるかを判定
         has_with_reason = "with_reason" in three_horizons_actions.__code__.co_varnames
         acts = three_horizons_actions(inputs, tone, with_reason=True) if has_with_reason else three_horizons_actions(inputs, tone)
         head_opts = [
@@ -53,16 +51,23 @@ except ModuleNotFoundError:
             "ひとこと": rng.choice(closer_opts),
         }
 
-# ---- Webリサーチ統合（ai_core_plus側に実装が無くても落ちないように）----
+# ---- Webリサーチ統合（ai_core_plus 側に未実装でも落ちないように）----
 try:
-    # あなたが ai_core_plus.py に実装した web_research_to_copies を使う
-    from ai_core_plus import web_research_to_copies    # type: ignore
+    from ai_core_plus import web_research_to_copies  # type: ignore
     HAS_WEB_RESEARCH = True
 except Exception:
     HAS_WEB_RESEARCH = False
     def web_research_to_copies(*args, **kwargs) -> dict:
-        # ダミー（未実装時に使う）。UI側で警告を出すのでここでは空返し。
         return {"sources": [], "keypoints": [], "copies": {}}
+
+# 実行計画ジェネレーター（What/How/Action）
+try:
+    from ai_core_plus import web_research_to_plan  # type: ignore
+    HAS_PLAN = True
+except Exception:
+    HAS_PLAN = False
+    def web_research_to_plan(*args, **kwargs) -> dict:
+        return {"why": "", "sources": [], "today": [], "week": [], "month": []}
 
 # three_horizons_actions が with_reason に対応していない場合に備えるヘルパー
 def th_actions_safe(inputs: Dict[str, Any], tone: str, with_reason: bool = False):
@@ -309,12 +314,64 @@ def render_result():
                 tabs = st.tabs(list(copies.keys()))
                 for tab, (k, arr) in zip(tabs, copies.items()):
                     with tab:
-                        # そのままコピペしやすいように textarea で提示
                         for i, c in enumerate(arr, start=1):
                             st.text_area(f"{k}（案 {i}）", c, height=90, key=f"{k}_{i}", help="必要に応じて微修正してお使いください。")
                         st.caption("※ 各案はWeb上の傾向をもとに自動構成。念のため自社ポリシー/レギュレーションに適合するよう確認してください。")
             else:
-                st.info("コピー候補が生成されませんでした。キーワードを広げる/件数を増やす/URLを追加する等をお試しください。")
+                st.info("コピー候補が生成されませんでした。キーワードを広げる/件数を増やす/URLを追加する等をお試しください.")
+
+    # ========== Web情報 → 実行計画（What/How/Action を言い切る） ==========
+    st.markdown("### ✅ Web情報をもとに『何を/どうやるか/どう測るか』を自動設計")
+    if not HAS_PLAN:
+        st.info("実行計画ジェネレーターが見つかりません。`ai_core_plus.py` に `web_research_to_plan` を追加してください。")
+    else:
+        plan_go = st.button("Webから収集→実行計画を作る ▶")
+        if plan_go:
+            with st.spinner("Webから情報収集→計画に落とし込み中..."):
+                plan = web_research_to_plan(
+                    query=web_query or (inputs.get("industry","") + " " + inputs.get("product","")).strip(),
+                    product=inputs.get("product","サービス"),
+                    industry=inputs.get("industry","その他"),
+                    extra_urls=[u.strip() for u in (extra_urls_str.splitlines() if extra_urls_str else []) if u.strip()],
+                    max_items=max_items,
+                    tone=tone_choice
+                )
+
+            # 情報源の表示
+            if plan["sources"]:
+                st.caption("参照情報（抜粋）：" + " / ".join(
+                    [f"[{s.get('title','source')}]({s.get('url')})" for s in plan["sources"] if s.get("url")]
+                ))
+
+            def render_bucket(title, items):
+                st.markdown(f"#### {title}")
+                if not items:
+                    st.write("- （該当なし）")
+                    return
+                for i, it in enumerate(items, start=1):
+                    with st.container():
+                        st.markdown(f"**{i}. {getattr(it, 'title', '')}**")
+                        st.caption(f"なぜ：{getattr(it, 'why', '')}")
+                        st.write("**やること（手順）**")
+                        for step in getattr(it, "steps", []):
+                            st.write("- " + step)
+                        st.write(f"**KPI**：{getattr(it, 'kpi', '')}｜**目標**：{getattr(it, 'target', '')}｜**工数/コスト**：{getattr(it, 'effort', '')}")
+                        with st.expander("リスクと手当て"):
+                            st.write(f"- リスク：{getattr(it, 'risks', '')}")
+                            st.write(f"- 手当て：{getattr(it, 'mitigation', '')}")
+                        # コピペ用
+                        src_urls = ", ".join([s.get("url") for s in plan["sources"] if s.get("url")])
+                        txt = f"""{getattr(it, 'title', '')}
+- WHY: {getattr(it, 'why', '')}
+- STEPS: {", ".join(getattr(it, "steps", []))}
+- KPI: {getattr(it, 'kpi', '')} / 目標: {getattr(it, 'target', '')}
+- 工数/コスト: {getattr(it, 'effort', '')}
+- 参考: {src_urls}"""
+                        st.text_area("コピペ用", txt, height=120, key=f"plan_copy_{title}_{i}")
+
+            render_bucket("今日やる（即効2〜3件）", plan.get("today", []))
+            render_bucket("今週やる（積み上げ2件）", plan.get("week", []))
+            render_bucket("今月やる（基盤2件）", plan.get("month", []))
 
     # ファネル診断
     diag = funnel_diagnosis(inputs)
@@ -396,26 +453,4 @@ def render_result():
     # UTMビルダー
     with st.expander("UTMリンクビルダー"):
         base = st.text_input("ベースURL", value="https://example.com/landing")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: src = st.text_input("utm_source", value="instagram")
-        with c2: med = st.text_input("utm_medium", value="social")
-        with c3: camp = st.text_input("utm_campaign", value="launch")
-        with c4: cont = st.text_input("utm_content", value="post")
-        utm = build_utm(base, src, med, camp, cont)
-        if utm: st.code(utm, language="text")
-
-    if st.button("◀ 入力に戻る"):
-        goto("input")
-
-# =========================
-# 画面遷移
-# =========================
-if st.session_state.page == "input":
-    render_input()
-elif st.session_state.page == "ad":
-    render_ad()
-else:
-    render_result()
-
-st.markdown("---")
-st.markdown('<p class="small">※ 本ツールは簡易コンサル支援です。数値は初期目安であり、結果を保証するものではありません。</p>', unsafe_allow_html=True)
+        c1, c2, c3
