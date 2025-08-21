@@ -53,6 +53,17 @@ except ModuleNotFoundError:
             "ひとこと": rng.choice(closer_opts),
         }
 
+# ---- Webリサーチ統合（ai_core_plus側に実装が無くても落ちないように）----
+try:
+    # あなたが ai_core_plus.py に実装した web_research_to_copies を使う
+    from ai_core_plus import web_research_to_copies    # type: ignore
+    HAS_WEB_RESEARCH = True
+except Exception:
+    HAS_WEB_RESEARCH = False
+    def web_research_to_copies(*args, **kwargs) -> dict:
+        # ダミー（未実装時に使う）。UI側で警告を出すのでここでは空返し。
+        return {"sources": [], "keypoints": [], "copies": {}}
+
 # three_horizons_actions が with_reason に対応していない場合に備えるヘルパー
 def th_actions_safe(inputs: Dict[str, Any], tone: str, with_reason: bool = False):
     if "with_reason" in three_horizons_actions.__code__.co_varnames:
@@ -63,7 +74,7 @@ def th_actions_safe(inputs: Dict[str, Any], tone: str, with_reason: bool = False
 # =========================
 # ページ設定（スマホ向け）
 # =========================
-st.set_page_config(page_title="集客コンサルAI Pro+ (Stable)", page_icon="🤝", layout="centered")
+st.set_page_config(page_title="集客コンサルAI Pro+", page_icon="🤝", layout="centered")
 st.markdown("""
 <style>
 html, body, [class*="css"]  { font-size: 16px; }
@@ -76,6 +87,7 @@ html, body, [class*="css"]  { font-size: 16px; }
 .step { display:inline-block; padding:4px 10px; border-radius:999px; background:#f2f4f7; margin-right:8px; font-size:13px; }
 .ad { border:1px dashed #c9c9c9; border-radius:12px; padding:14px; margin:8px 0; background:#fffef7; }
 .badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; margin-left:8px; }
+.copybox textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -241,6 +253,69 @@ def render_result():
     st.write(f"- **強み/弱み**: {inputs.get('strength')} / {inputs.get('weakness')}")
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # 🌐 Webリサーチで“そのまま使える”複数案を動的生成
+    st.markdown("### 🌐 Webリサーチから“そのまま使える”複数案を自動生成")
+    with st.expander("開く（検索条件を指定）", expanded=True):
+        q_col1, q_col2 = st.columns([3,2])
+        with q_col1:
+            web_query = st.text_input(
+                "検索クエリ（例：生成AI マーケティング 事例）",
+                value=f"{inputs.get('industry','')} {inputs.get('product','')}".strip()
+            )
+        with q_col2:
+            max_items = st.slider("最大取得件数", min_value=3, max_value=20, value=8, step=1)
+        extra_urls_str = st.text_area(
+            "追加で読み込みたいURL（改行区切り）",
+            height=80, placeholder="https://example.com/article-1\nhttps://example.com/blog-2"
+        )
+        tone_choice = st.selectbox("コピーのトーン", ["カジュアル","ビジネス","ユーモラス"], index=0)
+
+        go = st.button("Webから収集してコピーを作成 ▶")
+
+    if go:
+        if not HAS_WEB_RESEARCH:
+            st.warning("Web収集モジュールが読み込めませんでした。`ai_core_plus.py` に `web_research_to_copies` を実装し、`requests/beautifulsoup4/feedparser` をインストールしてください。")
+        else:
+            with st.spinner("Webから情報収集→要約→コピー生成中..."):
+                result = web_research_to_copies(
+                    query=web_query or (inputs.get("industry","") + " " + inputs.get("product","")).strip(),
+                    product=inputs.get("product","サービス"),
+                    industry=inputs.get("industry","その他"),
+                    extra_urls=[u.strip() for u in (extra_urls_str.splitlines() if extra_urls_str else []) if u.strip()],
+                    max_items=max_items,
+                    tone=tone_choice
+                )
+
+            # 情報源の一覧
+            st.markdown("#### 収集した情報源")
+            if not result["sources"]:
+                st.warning("本文抽出できる情報源がありませんでした。クエリやURLを見直してください。")
+            else:
+                for s in result["sources"]:
+                    with st.container():
+                        st.write(f"- **{s.get('title') or s.get('url')}** 〔{s.get('source')} / {s.get('published')}〕")
+                        preview = (s.get("text","")[:180] + "…") if len(s.get("text",""))>180 else s.get("text","")
+                        st.caption(preview)
+
+            # 抽出キーポイント
+            if result.get("keypoints"):
+                st.markdown("#### キーポイント（自動抽出）")
+                st.write(", ".join(result["keypoints"]))
+
+            # チャネル別コピー（複数案＆コピペ可）
+            st.markdown("#### チャネル別：そのまま使える複数案")
+            copies = result.get("copies", {})
+            if copies:
+                tabs = st.tabs(list(copies.keys()))
+                for tab, (k, arr) in zip(tabs, copies.items()):
+                    with tab:
+                        # そのままコピペしやすいように textarea で提示
+                        for i, c in enumerate(arr, start=1):
+                            st.text_area(f"{k}（案 {i}）", c, height=90, key=f"{k}_{i}", help="必要に応じて微修正してお使いください。")
+                        st.caption("※ 各案はWeb上の傾向をもとに自動構成。念のため自社ポリシー/レギュレーションに適合するよう確認してください。")
+            else:
+                st.info("コピー候補が生成されませんでした。キーワードを広げる/件数を増やす/URLを追加する等をお試しください。")
+
     # ファネル診断
     diag = funnel_diagnosis(inputs)
     st.markdown("### ファネル診断（AARRR）")
@@ -258,9 +333,11 @@ def render_result():
         if st.button("別の言い方で見る 🔄"):
             st.session_state['variant_seed'] += 1
             st.rerun()
-    adv = dynamic_advice(inputs, tone,
-                         variant_seed=st.session_state.get('variant_seed',0),
-                         emoji_rich=st.session_state.get('emoji_rich', True))
+    adv = dynamic_advice(
+        inputs, tone,
+        variant_seed=st.session_state.get('variant_seed',0),
+        emoji_rich=st.session_state.get('emoji_rich', True)
+    )
     st.info(adv["ヘッダー"])
     st.markdown("**今日やる（すぐ終わる2つ）**")
     for line in adv["今日やる"]:
@@ -281,10 +358,9 @@ def render_result():
         for line in acts.get(h, []):
             st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
 
-    # 具体例
+    # 具体例（テンプレ出力は残しておく：Web案と比較用）
     st.markdown("### 具体例（コピーテンプレ/トーク）")
     ex = concrete_examples(inputs, tone)
-    # 例とポイント（ポイントキーが無くても安全に表示）
     def getkey(d, k, default=""):
         return d[k] if k in d else default
     st.write("**SNS投稿例**：", explain_terms(getkey(ex, "SNS投稿", ""), st.session_state.get("explain_terms", True)))
