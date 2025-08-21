@@ -91,7 +91,7 @@ html, body, [class*="css"]  { font-size: 16px; }
 .small { color:#6b7280; font-size:12px; }
 .step { display:inline-block; padding:4px 10px; border-radius:999px; background:#f2f4f7; margin-right:8px; font-size:13px; }
 .ad { border:1px dashed #c9c9c9; border-radius:12px; padding:14px; margin:8px 0; background:#fffef7; }
-.badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; margin-left:8px; }
+.badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; }
 .copybox textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
 </style>
 """, unsafe_allow_html=True)
@@ -270,6 +270,7 @@ def render_result():
         with q_col2:
             max_items = st.slider("最大取得件数", min_value=3, max_value=20, value=8, step=1)
         tone_choice = st.selectbox("コピーのトーン", ["カジュアル","ビジネス","ユーモラス"], index=0)
+
         go = st.button("Webから収集してコピーを作成 ▶")
 
     if go:
@@ -281,7 +282,7 @@ def render_result():
                     query=web_query or (inputs.get("industry","") + " " + inputs.get("product","")).strip(),
                     product=inputs.get("product","サービス"),
                     industry=inputs.get("industry","その他"),
-                    extra_urls=None,          # ← 追加URLは使わない（自動収集）
+                    extra_urls=None,                 # ✅ 追加URLは使わない（自動収集）
                     max_items=max_items,
                     tone=tone_choice
                 )
@@ -289,7 +290,7 @@ def render_result():
             # 情報源の一覧
             st.markdown("#### 収集した情報源")
             if not result["sources"]:
-                st.warning("本文抽出できる情報源がありませんでした。クエリを見直してください。")
+                st.warning("本文抽出できる情報源がありませんでした。クエリを見直す/件数を増やす等をお試しください。")
             else:
                 for s in result["sources"]:
                     with st.container():
@@ -315,19 +316,19 @@ def render_result():
             else:
                 st.info("コピー候補が生成されませんでした。キーワードを広げる/件数を増やす等をお試しください。")
 
-    # ========== Web情報 → 実行計画（What/How/Action を言い切る） ==========
+    # ========== Web情報 → 実行計画（What/How/Action）も自動収集で ==========
     st.markdown("### ✅ Web情報をもとに『何を/どうやるか/どう測るか』を自動設計")
-    if not HAS_PLAN:
-        st.info("実行計画ジェネレーターが見つかりません。`ai_core_plus.py` に `web_research_to_plan` を追加してください。")
-    else:
-        plan_go = st.button("Webから収集→実行計画を作る ▶")
-        if plan_go:
+    plan_go = st.button("Webから収集→実行計画を作る ▶")
+    if plan_go:
+        if not HAS_PLAN:
+            st.info("実行計画ジェネレーターが見つかりません。`ai_core_plus.py` に `web_research_to_plan` を追加してください。")
+        else:
             with st.spinner("Webから情報収集→計画に落とし込み中..."):
                 plan = web_research_to_plan(
                     query=web_query or (inputs.get("industry","") + " " + inputs.get("product","")).strip(),
                     product=inputs.get("product","サービス"),
                     industry=inputs.get("industry","その他"),
-                    extra_urls=None,          # ← 追加URLは使わない（自動収集）
+                    extra_urls=None,               # ✅ 追加URLは使わない（自動収集）
                     max_items=max_items,
                     tone=tone_choice
                 )
@@ -354,6 +355,7 @@ def render_result():
                         with st.expander("リスクと手当て"):
                             st.write(f"- リスク：{getattr(it, 'risks', '')}")
                             st.write(f"- 手当て：{getattr(it, 'mitigation', '')}")
+                        # コピペ用
                         src_urls = ", ".join([s.get("url") for s in plan["sources"] if s.get("url")])
                         txt = f"""{getattr(it, 'title', '')}
 - WHY: {getattr(it, 'why', '')}
@@ -371,7 +373,8 @@ def render_result():
     diag = funnel_diagnosis(inputs)
     st.markdown("### ファネル診断（AARRR）")
     df_scores = pd.DataFrame([diag["scores"]]).T.reset_index()
-    df_scores.columns = ["ファネル", "スコア(0-100)"]
+    df_scores.columns = ["ファネル", "スコア(0-100)"
+    ]
     st.dataframe(df_scores, hide_index=True, use_container_width=True)
     st.info(humanize(f"ボトルネック：**{diag['bottleneck']}**。ここに効くタスクからやりましょう。", tone))
 
@@ -452,4 +455,21 @@ def render_result():
         with c2: med = st.text_input("utm_medium", value="social")
         with c3: camp = st.text_input("utm_campaign", value="launch")
         with c4: cont = st.text_input("utm_content", value="post")
-        utm = build_utm(b
+        utm = build_utm(base, src, med, camp, cont)
+        if utm: st.code(utm, language="text")
+
+    if st.button("◀ 入力に戻る"):
+        goto("input")
+
+# =========================
+# 画面遷移
+# =========================
+if st.session_state.page == "input":
+    render_input()
+elif st.session_state.page == "ad":
+    render_ad()
+else:
+    render_result()
+
+st.markdown("---")
+st.markdown('<p class="small">※ 本ツールは簡易コンサル支援です。数値は初期目安であり、結果を保証するものではありません。</p>', unsafe_allow_html=True)
