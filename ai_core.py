@@ -292,3 +292,213 @@ def build_utm(url: str, source="instagram", medium="social", campaign="launch", 
     if not url: return ""
     join = "&" if "?" in url else "?"
     return f"{url}{join}utm_source={source}&utm_medium={medium}&utm_campaign={campaign}&utm_content={content}"
+    # ========= ここから追記（ai_core_plus.py の末尾に貼り付け） =========
+import time
+import html
+from collections import Counter
+from urllib.parse import quote_plus, urlparse
+
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    import feedparser
+except Exception:
+    # 環境に無い場合でもアプリが落ちないように（UIで警告表示する）
+    requests = None
+    BeautifulSoup = None
+    feedparser = None
+
+# ---- Web収集：RSS候補の生成 ----
+DEFAULT_SOURCES = [
+    # 業界横断の最新ネタ（ニュース/トレンド）
+    "https://news.google.com/rss/search?q={query}&hl=ja&gl=JP&ceid=JP:ja",
+    # 追加のRSSをここに増やせます
+]
+
+def fetch_web_sources(query: str, extra_urls: list[str] | None = None, limit: int = 10, timeout: float = 8.0) -> list[dict]:
+    """
+    Web上のRSSや追加URLから候補記事のメタ情報を集める。
+    返り値: [{"title":..., "url":..., "source":..., "published": ...}, ...]
+    """
+    results = []
+    if not (requests and feedparser):
+        return results
+
+    q = quote_plus(query)
+    feeds = [u.format(query=q) for u in DEFAULT_SOURCES]
+    try:
+        for feed_url in feeds:
+            d = feedparser.parse(feed_url)
+            for e in d.entries[: limit]:
+                url = getattr(e, "link", None)
+                if not url: continue
+                results.append({
+                    "title": getattr(e, "title", "").strip(),
+                    "url": url,
+                    "source": urlparse(url).netloc,
+                    "published": getattr(e, "published", "") or getattr(e, "updated", ""),
+                })
+    except Exception:
+        pass
+
+    # 追加URL（ユーザー直指定）
+    for u in (extra_urls or []):
+        if u and isinstance(u, str):
+            results.append({
+                "title": "",
+                "url": u.strip(),
+                "source": urlparse(u).netloc,
+                "published": "",
+            })
+
+    # 重複除去
+    seen = set()
+    uniq = []
+    for r in results:
+        if r["url"] in seen: continue
+        seen.add(r["url"])
+        uniq.append(r)
+    return uniq[:limit]
+
+# ---- 本文抽出＆クレンジング ----
+def scrape_and_clean(url: str, timeout: float = 8.0) -> str:
+    if not (requests and BeautifulSoup): 
+        return ""
+    try:
+        res = requests.get(url, timeout=timeout, headers={"User-Agent":"Mozilla/5.0"})
+        if res.status_code != 200: 
+            return ""
+        html_text = res.text
+        soup = BeautifulSoup(html_text, "html.parser")
+
+        # 余計な要素をドロップ
+        for s in soup(["script","style","noscript","header","footer","form","nav","aside"]):
+            s.decompose()
+
+        # 記事本文っぽい要素を優先（article / main / section）
+        candidate = soup.find("article") or soup.find("main") or soup.find("section") or soup.body
+        text = candidate.get_text(separator="\n", strip=True) if candidate else soup.get_text("\n", strip=True)
+        text = html.unescape(text)
+        # ノイズ簡易除去
+        lines = [ln for ln in text.splitlines() if ln and len(ln) > 8]
+        text = "\n".join(lines[:800])  # 長すぎ防止
+        return text
+    except Exception:
+        return ""
+
+# ---- キーフレーズ抽出（低コスト） ----
+def extract_keypoints(texts: list[str], top_k: int = 20) -> list[str]:
+    """
+    ざっくり頻出フレーズを抽出（bigram/trigram + 名詞らしき語）
+    依存少なめ・ロバスト性重視
+    """
+    tokens = []
+    for t in texts:
+        t = t.replace("\u3000"," ").replace("　"," ")
+        # シンプルに記号類を空白化
+        t = re.sub(r"[^\wぁ-んァ-ヶ一-龠\- ]+", " ", t)
+        words = [w for w in t.split() if len(w) >= 2]
+        tokens.extend(words)
+
+    # bigram, trigram
+    bigrams = [" ".join(tokens[i:i+2]) for i in range(len(tokens)-1)]
+    trigrams = [" ".join(tokens[i:i+3]) for i in range(len(tokens)-2)]
+    counts = Counter(tokens + bigrams + trigrams)
+
+    # ストップワード簡易
+    stop = set(["こと","ため","よう","する","して","です","ます","これ","それ","ここ","もの","あり","ない"])
+    scored = [(k,v) for (k,v) in counts.items() if k not in stop and not re.fullmatch(r"\d+", k)]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    phrases = [p for (p,_) in scored[: top_k]]
+    return phrases
+
+# ---- チャネル別コピー生成（複数案） ----
+def compose_channel_copies(product: str, industry: str, keypoints: list[str], tone: str = "カジュアル", n: int = 5) -> dict:
+    """
+    keypoints を元に、SNS/広告/メール/LPでそのまま使えるコピーを複数案生成
+    """
+    def T(s: str) -> str:
+        if tone == "ビジネス":
+            s = s.replace("！","。").replace("🔥","").replace("✨","").replace("💡","")
+        elif tone == "ユーモラス":
+            s = s + " 🤣"
+        return s
+
+    def pick(k: int) -> list[str]:
+        # キーフレーズから多様性重視で拝借
+        base = keypoints[: max(8, k*3)]
+        rng = random.Random(len(" ".join(keypoints)))
+        outs = []
+        for i in range(k):
+            pts = rng.sample(base, min(3, len(base))) if base else []
+            outs.append(pts)
+        return outs
+
+    outs = {
+        "SNS/Twitter(X)": [],
+        "SNS/Instagram": [],
+        "SNS/LinkedIn": [],
+        "広告/Google": [],
+        "広告/Meta": [],
+        "メール/件名": [],
+        "メール/本文": [],
+        "LP/ヒーロー": [],
+    }
+
+    # SNS
+    for pts in pick(n):
+        outs["SNS/Twitter(X)"].append(T(f"【{product}】いま話題のポイント → " + " / ".join(pts) + "｜詳しくはリンクへ 🔗"))
+    for pts in pick(n):
+        outs["SNS/Instagram"].append(T(f"📸 {product} の推しどころ → " + "・".join(pts) + "｜保存して後で見返すのが吉 ✨"))
+    for pts in pick(n):
+        outs["SNS/LinkedIn"].append(T(f"{industry}の最新トレンドから抽出：{', '.join(pts)}。{product} がどう効くかを短く共有します。"))
+
+    # 広告
+    for pts in pick(n):
+        outs["広告/Google"].append(T(f"{product}｜" + "・".join(pts) + "。まずは無料で体験。"))
+    for pts in pick(n):
+        outs["広告/Meta"].append(T(f"{product} を試す理由 → " + " / ".join(pts) + "。申込は30秒 ⏱"))
+
+    # メール
+    for pts in pick(n):
+        outs["メール/件名"].append(f"{product}で成果が動いた要因：{', '.join(pts)}")
+    for pts in pick(n):
+        outs["メール/本文"].append(T(
+            f"{product}にご関心ありがとうございます。\n"
+            f"今回は「{', '.join(pts)}」の観点から、すぐ使えるヒントを2分でご紹介します。\n"
+            f"→ 詳細はリンク先へ。"
+        ))
+
+    # LP
+    for pts in pick(n):
+        outs["LP/ヒーロー"].append(
+            f"{product} — {industry}の今に効く。{pts[0] if pts else 'いま必要な一手'}を、最短で体験。"
+        )
+    return outs
+
+# ---- メイン：Web収集→生成をまとめて呼び出す ----
+def web_research_to_copies(query: str, product: str, industry: str,
+                           extra_urls: list[str] | None = None,
+                           max_items: int = 10,
+                           tone: str = "カジュアル") -> dict:
+    """
+    1) ソース収集 2) 本文抽出 3) キーフレーズ抽出 4) チャネル別コピー生成
+    返り値: {"sources":[{title,url,source,published,text}], "keypoints":[...], "copies":{...}}
+    """
+    items = fetch_web_sources(query, extra_urls=extra_urls, limit=max_items)
+    texts = []
+    enriched = []
+    for it in items:
+        txt = scrape_and_clean(it["url"])
+        if not txt: 
+            continue
+        it2 = dict(it)
+        it2["text"] = txt
+        enriched.append(it2)
+        texts.append(txt)
+        # 軽量なので早戻りは不要
+
+    keypoints = extract_keypoints(texts, top_k=20) if texts else []
+    copies = compose_channel_copies(product=product, industry=industry, keypoints=keypoints, tone=tone, n=5)
+    return {"sources": enriched, "keypoints": keypoints, "copies": copies}
+# ========= 追記ここまで =========
