@@ -1,5 +1,3 @@
-# streamlit_app.py
-
 import os
 import time
 import random
@@ -242,7 +240,7 @@ def render_ad():
         st.rerun()
 
 # =========================
-# チャネル別コピー生成（Web情報ベース）
+# チャネル別コピー UI セクション
 # =========================
 def render_channel_copies_section(inputs):
     st.markdown("### ✍️ チャネル別コピー（Web情報→そのまま使える複数案）")
@@ -456,7 +454,7 @@ def render_result():
         for line in acts.get(h, []):
             st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
 
-    # 具体例（コピーテンプレ/トーク）
+    # 具体例（テンプレ出力は残しておく）
     st.markdown("### 具体例（コピーテンプレ/トーク）")
     ex = concrete_examples(inputs, tone)
     def getkey(d, k, default=""):
@@ -470,4 +468,50 @@ def render_result():
     with st.expander("DMテンプレ / 電話トーク"):
         st.write("**DMテンプレ**：", explain_terms(getkey(ex, "DMテンプレ", ""), st.session_state.get("explain_terms", True)))
         if getkey(ex, "DMポイント"): st.caption(getkey(ex, "DMポイント"))
-        st.write("**電話トーク**：", explain_terms(
+        st.write("**電話トーク**：", explain_terms(getkey(ex, "電話トーク", ""), st.session_state.get("explain_terms", True)))
+        if getkey(ex, "電話ポイント"): st.caption(getkey(ex, "電話ポイント"))
+
+    # KPI逆算（ゴールからバックキャスト）
+    st.markdown("### KPI逆算（ゴールからバックキャスト）")
+    kpi_df = kpi_backsolve(inputs)
+    st.dataframe(kpi_df, hide_index=True, use_container_width=True)
+
+    # 週予算の推奨配分
+    st.markdown("### 週予算の推奨配分")
+    alloc_df = budget_allocation(inputs)
+    st.dataframe(alloc_df, hide_index=True, use_container_width=True)
+
+    # ダウンロード（アクションCSV）
+    rows = []
+    for h in acts:
+        for line in acts[h]:
+            rows.append({"期間": h, "タスク": line})
+    plan_df = pd.DataFrame(rows)
+    st.download_button("📥 アクション計画（CSV）", plan_df.to_csv(index=False).encode("utf-8-sig"), "actions.csv", "text/csv")
+
+    # UTMビルダー
+    with st.expander("UTMリンクビルダー"):
+        base = st.text_input("ベースURL", value="https://example.com/landing")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: src = st.text_input("utm_source", value="instagram")
+        with c2: med = st.text_input("utm_medium", value="social")
+        with c3: camp = st.text_input("utm_campaign", value="launch")
+        with c4: cont = st.text_input("utm_content", value="post")
+        utm = build_utm(base, src, med, camp, cont)
+        if utm: st.code(utm, language="text")
+
+    if st.button("◀ 入力に戻る"):
+        goto("input")
+
+# =========================
+# 画面遷移
+# =========================
+if st.session_state.page == "input":
+    render_input()
+elif st.session_state.page == "ad":
+    render_ad()
+else:
+    render_result()
+
+st.markdown("---")
+st.markdown('<p class="small">※ 本ツールは簡易コンサル支援です。数値は初期目安であり、結果を保証するものではありません。</p>', unsafe_allow_html=True)
