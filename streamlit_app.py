@@ -258,7 +258,7 @@ def render_result():
     st.write(f"- **強み/弱み**: {inputs.get('strength')} / {inputs.get('weakness')}")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # 🌐 Webリサーチで“そのまま使える”複数案を動的生成
+    # 🌐 Webリサーチで“そのまま使える”複数案を動的生成（URL入力なし・自動収集）
     st.markdown("### 🌐 Webリサーチから“そのまま使える”複数案を自動生成")
     with st.expander("開く（検索条件を指定）", expanded=True):
         q_col1, q_col2 = st.columns([3,2])
@@ -269,12 +269,7 @@ def render_result():
             )
         with q_col2:
             max_items = st.slider("最大取得件数", min_value=3, max_value=20, value=8, step=1)
-        extra_urls_str = st.text_area(
-            "追加で読み込みたいURL（改行区切り）",
-            height=80, placeholder="https://example.com/article-1\nhttps://example.com/blog-2"
-        )
         tone_choice = st.selectbox("コピーのトーン", ["カジュアル","ビジネス","ユーモラス"], index=0)
-
         go = st.button("Webから収集してコピーを作成 ▶")
 
     if go:
@@ -286,7 +281,7 @@ def render_result():
                     query=web_query or (inputs.get("industry","") + " " + inputs.get("product","")).strip(),
                     product=inputs.get("product","サービス"),
                     industry=inputs.get("industry","その他"),
-                    extra_urls=[u.strip() for u in (extra_urls_str.splitlines() if extra_urls_str else []) if u.strip()],
+                    extra_urls=None,          # ← 追加URLは使わない（自動収集）
                     max_items=max_items,
                     tone=tone_choice
                 )
@@ -294,7 +289,7 @@ def render_result():
             # 情報源の一覧
             st.markdown("#### 収集した情報源")
             if not result["sources"]:
-                st.warning("本文抽出できる情報源がありませんでした。クエリやURLを見直してください。")
+                st.warning("本文抽出できる情報源がありませんでした。クエリを見直してください。")
             else:
                 for s in result["sources"]:
                     with st.container():
@@ -318,7 +313,7 @@ def render_result():
                             st.text_area(f"{k}（案 {i}）", c, height=90, key=f"{k}_{i}", help="必要に応じて微修正してお使いください。")
                         st.caption("※ 各案はWeb上の傾向をもとに自動構成。念のため自社ポリシー/レギュレーションに適合するよう確認してください。")
             else:
-                st.info("コピー候補が生成されませんでした。キーワードを広げる/件数を増やす/URLを追加する等をお試しください.")
+                st.info("コピー候補が生成されませんでした。キーワードを広げる/件数を増やす等をお試しください。")
 
     # ========== Web情報 → 実行計画（What/How/Action を言い切る） ==========
     st.markdown("### ✅ Web情報をもとに『何を/どうやるか/どう測るか』を自動設計")
@@ -332,7 +327,7 @@ def render_result():
                     query=web_query or (inputs.get("industry","") + " " + inputs.get("product","")).strip(),
                     product=inputs.get("product","サービス"),
                     industry=inputs.get("industry","その他"),
-                    extra_urls=[u.strip() for u in (extra_urls_str.splitlines() if extra_urls_str else []) if u.strip()],
+                    extra_urls=None,          # ← 追加URLは使わない（自動収集）
                     max_items=max_items,
                     tone=tone_choice
                 )
@@ -359,7 +354,6 @@ def render_result():
                         with st.expander("リスクと手当て"):
                             st.write(f"- リスク：{getattr(it, 'risks', '')}")
                             st.write(f"- 手当て：{getattr(it, 'mitigation', '')}")
-                        # コピペ用
                         src_urls = ", ".join([s.get("url") for s in plan["sources"] if s.get("url")])
                         txt = f"""{getattr(it, 'title', '')}
 - WHY: {getattr(it, 'why', '')}
@@ -458,21 +452,4 @@ def render_result():
         with c2: med = st.text_input("utm_medium", value="social")
         with c3: camp = st.text_input("utm_campaign", value="launch")
         with c4: cont = st.text_input("utm_content", value="post")
-        utm = build_utm(base, src, med, camp, cont)
-        if utm: st.code(utm, language="text")
-
-    if st.button("◀ 入力に戻る"):
-        goto("input")
-
-# =========================
-# 画面遷移
-# =========================
-if st.session_state.page == "input":
-    render_input()
-elif st.session_state.page == "ad":
-    render_ad()
-else:
-    render_result()
-
-st.markdown("---")
-st.markdown('<p class="small">※ 本ツールは簡易コンサル支援です。数値は初期目安であり、結果を保証するものではありません。</p>', unsafe_allow_html=True)
+        utm = build_utm(b
