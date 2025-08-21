@@ -1,3 +1,5 @@
+# streamlit_app.py
+
 import os
 import time
 import random
@@ -59,6 +61,15 @@ except Exception:
     HAS_PLAN = False
     def web_research_to_plan(*args, **kwargs) -> dict:
         return {"why": "", "sources": [], "today": [], "week": [], "month": []}
+
+# チャネル別コピー（Web情報→コピー生成）
+try:
+    from ai_core_plus import web_research_to_copies  # type: ignore
+    HAS_COPIES = True
+except Exception:
+    HAS_COPIES = False
+    def web_research_to_copies(*args, **kwargs) -> dict:
+        return {"sources": [], "keypoints": [], "copies": {}}
 
 # three_horizons_actions が with_reason に対応していない場合に備えるヘルパー
 def th_actions_safe(inputs: Dict[str, Any], tone: str, with_reason: bool = False):
@@ -231,6 +242,97 @@ def render_ad():
         st.rerun()
 
 # =========================
+# チャネル別コピー生成（Web情報ベース）
+# =========================
+def render_channel_copies_section(inputs):
+    st.markdown("### ✍️ チャネル別コピー（Web情報→そのまま使える複数案）")
+    st.caption("最新のWeb記事から要点を抽出し、SNS/広告/メール/LPのコピーを5案ずつ自動生成します。")
+
+    if not HAS_COPIES:
+        st.info("コピー生成エンジンが見つかりません。`ai_core_plus.py` に `web_research_to_copies` を追加してください。")
+        return
+
+    with st.expander("検索条件（任意で調整）", expanded=True):
+        default_query = f"{inputs.get('industry','')} {inputs.get('product','')}".strip()
+        web_query = st.text_input("検索クエリ", value=default_query, key="copy_query")
+        max_items = st.slider("最大取得件数", min_value=3, max_value=20, value=8, step=1, key="copy_max_items")
+        extra_urls_str = st.text_area("追加で読み込みたいURL（改行区切り）", height=80, key="copy_extra_urls")
+        tone_choice = st.selectbox("トーン", ["カジュアル","ビジネス","ユーモラス"], index=0, key="copy_tone")
+        go = st.button("Webから収集→コピーを作る ▶", key="copy_go")
+
+    if not go:
+        return
+
+    with st.spinner("Webから情報収集→コピー生成中..."):
+        res = web_research_to_copies(
+            query=web_query or default_query,
+            product=inputs.get("product","サービス"),
+            industry=inputs.get("industry","その他"),
+            extra_urls=[u.strip() for u in (extra_urls_str.splitlines() if extra_urls_str else []) if u.strip()],
+            max_items=max_items,
+            tone=tone_choice
+        )
+
+    sources = res.get("sources", [])
+    keypoints = res.get("keypoints", [])
+    copies = res.get("copies", {})
+
+    # 参照情報
+    if sources:
+        st.caption("参照情報（抜粋）：" + " / ".join(
+            [f"[{s.get('title') or s.get('url')}]({s.get('url')})" for s in sources if s.get("url")]
+        ))
+
+    # キーポイントをタグ風に
+    if keypoints:
+        st.write("**抽出キーポイント（上位）**")
+        cols = st.columns(6)
+        for i, kp in enumerate(keypoints[:18]):
+            with cols[i % 6]:
+                st.markdown(f"<div class='badge' style='display:inline-block;margin:4px 0;'>{kp}</div>", unsafe_allow_html=True)
+
+    # チャネルごとに5案表示＋選択保存
+    st.markdown("---")
+    st.write("**コピー一覧（各チャネル5案）**")
+    selected_rows = []
+
+    order = [
+        "SNS/Twitter(X)", "SNS/Instagram", "SNS/LinkedIn",
+        "広告/Google", "広告/Meta",
+        "メール/件名", "メール/本文",
+        "LP/ヒーロー",
+    ]
+    for ch in order:
+        arr = copies.get(ch, [])
+        if not arr:
+            continue
+        st.markdown(f"#### {ch}")
+        for idx, text in enumerate(arr, start=1):
+            with st.container():
+                st.text_area(f"{ch} #{idx}", text, height=80, key=f"copy_{ch}_{idx}")
+                c1, c2 = st.columns([1,6])
+                with c1:
+                    keep = st.checkbox("保存", key=f"save_{ch}_{idx}")
+                with c2:
+                    st.caption("※ 編集してから保存もOKです。")
+                if keep:
+                    selected_rows.append({"チャネル": ch, "案番号": idx, "コピー": st.session_state.get(f"copy_{ch}_{idx}", text)})
+
+    # 保存・エクスポート
+    st.markdown("---")
+    if selected_rows:
+        df = pd.DataFrame(selected_rows)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        st.download_button(
+            "📥 選択したコピーをCSVで保存",
+            df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="channel_copies.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("保存するコピーをチェックすると、ここに一覧とCSVダウンロードが出ます。")
+
+# =========================
 # 結果画面
 # =========================
 def render_result():
@@ -309,6 +411,9 @@ def render_result():
             render_bucket("今週やる（積み上げ2件）", plan.get("week", []))
             render_bucket("今月やる（基盤2件）", plan.get("month", []))
 
+    # --- チャネル別コピー生成（Web情報ベース） ---
+    render_channel_copies_section(inputs)
+
     # ファネル診断
     diag = funnel_diagnosis(inputs)
     st.markdown("### ファネル診断（AARRR）")
@@ -351,7 +456,7 @@ def render_result():
         for line in acts.get(h, []):
             st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
 
-    # 具体例（テンプレ出力は残しておく）
+    # 具体例（コピーテンプレ/トーク）
     st.markdown("### 具体例（コピーテンプレ/トーク）")
     ex = concrete_examples(inputs, tone)
     def getkey(d, k, default=""):
@@ -365,50 +470,4 @@ def render_result():
     with st.expander("DMテンプレ / 電話トーク"):
         st.write("**DMテンプレ**：", explain_terms(getkey(ex, "DMテンプレ", ""), st.session_state.get("explain_terms", True)))
         if getkey(ex, "DMポイント"): st.caption(getkey(ex, "DMポイント"))
-        st.write("**電話トーク**：", explain_terms(getkey(ex, "電話トーク", ""), st.session_state.get("explain_terms", True)))
-        if getkey(ex, "電話ポイント"): st.caption(getkey(ex, "電話ポイント"))
-
-    # KPI逆算（ゴールからバックキャスト）
-    st.markdown("### KPI逆算（ゴールからバックキャスト）")
-    kpi_df = kpi_backsolve(inputs)
-    st.dataframe(kpi_df, hide_index=True, use_container_width=True)
-
-    # 週予算の推奨配分
-    st.markdown("### 週予算の推奨配分")
-    alloc_df = budget_allocation(inputs)
-    st.dataframe(alloc_df, hide_index=True, use_container_width=True)
-
-    # ダウンロード（アクションCSV）
-    rows = []
-    for h in acts:
-        for line in acts[h]:
-            rows.append({"期間": h, "タスク": line})
-    plan_df = pd.DataFrame(rows)
-    st.download_button("📥 アクション計画（CSV）", plan_df.to_csv(index=False).encode("utf-8-sig"), "actions.csv", "text/csv")
-
-    # UTMビルダー
-    with st.expander("UTMリンクビルダー"):
-        base = st.text_input("ベースURL", value="https://example.com/landing")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: src = st.text_input("utm_source", value="instagram")
-        with c2: med = st.text_input("utm_medium", value="social")
-        with c3: camp = st.text_input("utm_campaign", value="launch")
-        with c4: cont = st.text_input("utm_content", value="post")
-        utm = build_utm(base, src, med, camp, cont)
-        if utm: st.code(utm, language="text")
-
-    if st.button("◀ 入力に戻る"):
-        goto("input")
-
-# =========================
-# 画面遷移
-# =========================
-if st.session_state.page == "input":
-    render_input()
-elif st.session_state.page == "ad":
-    render_ad()
-else:
-    render_result()
-
-st.markdown("---")
-st.markdown('<p class="small">※ 本ツールは簡易コンサル支援です。数値は初期目安であり、結果を保証するものではありません。</p>', unsafe_allow_html=True)
+        st.write("**電話トーク**：", explain_terms(
