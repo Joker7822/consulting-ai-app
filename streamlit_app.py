@@ -51,15 +51,6 @@ except ModuleNotFoundError:
             "ひとこと": rng.choice(closer_opts),
         }
 
-# ---- Webリサーチ統合（ai_core_plus 側に未実装でも落ちないように）----
-try:
-    from ai_core_plus import web_research_to_copies  # type: ignore
-    HAS_WEB_RESEARCH = True
-except Exception:
-    HAS_WEB_RESEARCH = False
-    def web_research_to_copies(*args, **kwargs) -> dict:
-        return {"sources": [], "keypoints": [], "copies": {}}
-
 # 実行計画ジェネレーター（What/How/Action）
 try:
     from ai_core_plus import web_research_to_plan  # type: ignore
@@ -91,7 +82,7 @@ html, body, [class*="css"]  { font-size: 16px; }
 .small { color:#6b7280; font-size:12px; }
 .step { display:inline-block; padding:4px 10px; border-radius:999px; background:#f2f4f7; margin-right:8px; font-size:13px; }
 .ad { border:1px dashed #c9c9c9; border-radius:12px; padding:14px; margin:8px 0; background:#fffef7; }
-.badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; }
+.badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; margin-left:8px; }
 .copybox textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
 </style>
 """, unsafe_allow_html=True)
@@ -258,77 +249,26 @@ def render_result():
     st.write(f"- **強み/弱み**: {inputs.get('strength')} / {inputs.get('weakness')}")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # 🌐 Webリサーチで“そのまま使える”複数案を動的生成（URL入力なし・自動収集）
-    st.markdown("### 🌐 Webリサーチから“そのまま使える”複数案を自動生成")
-    with st.expander("開く（検索条件を指定）", expanded=True):
-        q_col1, q_col2 = st.columns([3,2])
-        with q_col1:
-            web_query = st.text_input(
-                "検索クエリ（例：生成AI マーケティング 事例）",
-                value=f"{inputs.get('industry','')} {inputs.get('product','')}".strip()
-            )
-        with q_col2:
-            max_items = st.slider("最大取得件数", min_value=3, max_value=20, value=8, step=1)
-        tone_choice = st.selectbox("コピーのトーン", ["カジュアル","ビジネス","ユーモラス"], index=0)
-
-        go = st.button("Webから収集してコピーを作成 ▶")
-
-    if go:
-        if not HAS_WEB_RESEARCH:
-            st.warning("Web収集モジュールが読み込めませんでした。`ai_core_plus.py` に `web_research_to_copies` を実装し、`requests/beautifulsoup4/feedparser` をインストールしてください。")
-        else:
-            with st.spinner("Webから情報収集→要約→コピー生成中..."):
-                result = web_research_to_copies(
-                    query=web_query or (inputs.get("industry","") + " " + inputs.get("product","")).strip(),
-                    product=inputs.get("product","サービス"),
-                    industry=inputs.get("industry","その他"),
-                    extra_urls=None,                 # ✅ 追加URLは使わない（自動収集）
-                    max_items=max_items,
-                    tone=tone_choice
-                )
-
-            # 情報源の一覧
-            st.markdown("#### 収集した情報源")
-            if not result["sources"]:
-                st.warning("本文抽出できる情報源がありませんでした。クエリを見直す/件数を増やす等をお試しください。")
-            else:
-                for s in result["sources"]:
-                    with st.container():
-                        st.write(f"- **{s.get('title') or s.get('url')}** 〔{s.get('source')} / {s.get('published')}〕")
-                        preview = (s.get("text","")[:180] + "…") if len(s.get("text",""))>180 else s.get("text","")
-                        st.caption(preview)
-
-            # 抽出キーポイント
-            if result.get("keypoints"):
-                st.markdown("#### キーポイント（自動抽出）")
-                st.write(", ".join(result["keypoints"]))
-
-            # チャネル別コピー（複数案＆コピペ可）
-            st.markdown("#### チャネル別：そのまま使える複数案")
-            copies = result.get("copies", {})
-            if copies:
-                tabs = st.tabs(list(copies.keys()))
-                for tab, (k, arr) in zip(tabs, copies.items()):
-                    with tab:
-                        for i, c in enumerate(arr, start=1):
-                            st.text_area(f"{k}（案 {i}）", c, height=90, key=f"{k}_{i}", help="必要に応じて微修正してお使いください。")
-                        st.caption("※ 各案はWeb上の傾向をもとに自動構成。念のため自社ポリシー/レギュレーションに適合するよう確認してください。")
-            else:
-                st.info("コピー候補が生成されませんでした。キーワードを広げる/件数を増やす等をお試しください。")
-
-    # ========== Web情報 → 実行計画（What/How/Action）も自動収集で ==========
+    # ========== Web情報 → 実行計画（What/How/Action を言い切る） ==========
     st.markdown("### ✅ Web情報をもとに『何を/どうやるか/どう測るか』を自動設計")
-    plan_go = st.button("Webから収集→実行計画を作る ▶")
-    if plan_go:
-        if not HAS_PLAN:
-            st.info("実行計画ジェネレーターが見つかりません。`ai_core_plus.py` に `web_research_to_plan` を追加してください。")
-        else:
+    if not HAS_PLAN:
+        st.info("実行計画ジェネレーターが見つかりません。`ai_core_plus.py` に `web_research_to_plan` を追加してください。")
+    else:
+        with st.expander("検索条件（任意で調整）", expanded=True):
+            default_query = f"{inputs.get('industry','')} {inputs.get('product','')}".strip()
+            web_query = st.text_input("検索クエリ", value=default_query)
+            max_items = st.slider("最大取得件数", min_value=3, max_value=20, value=8, step=1)
+            extra_urls_str = st.text_area("追加で読み込みたいURL（改行区切り）", height=80, placeholder="")
+            tone_choice = st.selectbox("トーン", ["カジュアル","ビジネス","ユーモラス"], index=0)
+            plan_go = st.button("Webから収集→実行計画を作る ▶")
+
+        if plan_go:
             with st.spinner("Webから情報収集→計画に落とし込み中..."):
                 plan = web_research_to_plan(
-                    query=web_query or (inputs.get("industry","") + " " + inputs.get("product","")).strip(),
+                    query=web_query or default_query,
                     product=inputs.get("product","サービス"),
                     industry=inputs.get("industry","その他"),
-                    extra_urls=None,               # ✅ 追加URLは使わない（自動収集）
+                    extra_urls=[u.strip() for u in (extra_urls_str.splitlines() if extra_urls_str else []) if u.strip()],
                     max_items=max_items,
                     tone=tone_choice
                 )
@@ -373,8 +313,7 @@ def render_result():
     diag = funnel_diagnosis(inputs)
     st.markdown("### ファネル診断（AARRR）")
     df_scores = pd.DataFrame([diag["scores"]]).T.reset_index()
-    df_scores.columns = ["ファネル", "スコア(0-100)"
-    ]
+    df_scores.columns = ["ファネル", "スコア(0-100)"]
     st.dataframe(df_scores, hide_index=True, use_container_width=True)
     st.info(humanize(f"ボトルネック：**{diag['bottleneck']}**。ここに効くタスクからやりましょう。", tone))
 
@@ -412,7 +351,7 @@ def render_result():
         for line in acts.get(h, []):
             st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
 
-    # 具体例（テンプレ出力は残しておく：Web案と比較用）
+    # 具体例（テンプレ出力は残しておく）
     st.markdown("### 具体例（コピーテンプレ/トーク）")
     ex = concrete_examples(inputs, tone)
     def getkey(d, k, default=""):
