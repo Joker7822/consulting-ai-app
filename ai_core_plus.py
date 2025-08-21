@@ -502,3 +502,161 @@ def web_research_to_copies(query: str, product: str, industry: str,
     copies = compose_channel_copies(product=product, industry=industry, keypoints=keypoints, tone=tone, n=5)
     return {"sources": enriched, "keypoints": keypoints, "copies": copies}
 # ========= 追記ここまで =========
+# ========= Web→実行計画 生成ユーティリティ =========
+from dataclasses import dataclass
+
+@dataclass
+class ActionItem:
+    title: str
+    why: str
+    steps: list
+    kpi: str
+    target: str
+    resources: list  # [{"title":..., "url":...}]
+    effort: str      # 例: "30分 / 0円"
+    risks: str
+    mitigation: str
+
+def _shorten(txt: str, n: int = 120) -> str:
+    return (txt[:n] + "…") if len(txt) > n else txt
+
+def web_research_to_plan(query: str, product: str, industry: str,
+                         extra_urls: list[str] | None = None,
+                         max_items: int = 8,
+                         tone: str = "カジュアル") -> dict:
+    """
+    Webから情報収集→キーポイント抽出(web_research_to_copies を再利用)
+    → '今日/今週/今月' の実行計画オブジェクトに落とす
+    """
+    # 既存の収集器を使う（未実装の環境でも例外で落ちないようガード）
+    try:
+        res = web_research_to_copies(
+            query=query, product=product, industry=industry,
+            extra_urls=extra_urls, max_items=max_items, tone=tone
+        )
+    except Exception:
+        res = {"sources": [], "keypoints": [], "copies": {}}
+
+    sources = res.get("sources", [])
+    keypoints = res.get("keypoints", [])
+
+    # 1) “何をやるか”を言い切る（keypointsを用途別に割付）
+    focus = keypoints[:6] if keypoints else []
+    f1 = focus[0] if len(focus) > 0 else "訴求の明確化"
+    f2 = focus[1] if len(focus) > 1 else "第一印象（ヒーロー）改善"
+    f3 = focus[2] if len(focus) > 2 else "CTA/摩擦の低減"
+    f4 = focus[3] if len(focus) > 3 else "検討素材（FAQ/比較表）の充実"
+    f5 = focus[4] if len(focus) > 4 else "ABテスト設計"
+    f6 = focus[5] if len(focus) > 5 else "CRM/継続導線"
+
+    # 2) 情報源→要点の“なぜ（WHY）”
+    why_text = "最新の記事/事例で頻出の論点に基づく優先順位。ボトルネックに直結しやすい順に並べています。"
+    srcs = [{"title": _shorten(s.get("title") or s.get("url") or ""), "url": s.get("url")} for s in sources][:5]
+
+    # 3) アクション（今日/今週/今月）
+    today = [
+        ActionItem(
+            title=f"LPのヒーローで『誰の/どの悩み/どう解決』を一画面で言い切る（{f2}）",
+            why="第一印象の改善はCVRに直結（直帰率の改善が見込める）。",
+            steps=[
+                "ヒーロー見出し：痛み→ベネフィットの順で2案作成",
+                "サブ：社会的証明（レビュー・導入実績）をひとこと追加",
+                "CTA：『無料で試す/30秒で完了』系を配置（ファーストビュー内）",
+            ],
+            kpi="CVR（成約率）/ 直帰率",
+            target="CVR +20% / 直帰率 -10pt（7日で観測）",
+            resources=srcs,
+            effort="45分 / 0円",
+            risks="ヒーローに情報過多で視線が散る",
+            mitigation="文字量を抑えて1メッセージ1CTAに統一"
+        ),
+        ActionItem(
+            title=f"広告の否定KW/除外面を10件棚卸し（{f3}）",
+            why="ムダクリックを減らしCPAを改善。クリック品質を先に上げる。",
+            steps=[
+                "検索語句レポートを出力→不適合語を抽出",
+                "除外リストに登録→入札調整/配信面の見直し",
+                "CTR・CPCの変化とCVRを1日単位で確認",
+            ],
+            kpi="CTR / CPC / CPA",
+            target="CTR +10% / CPC -10% / CPA -15%（1週で評価）",
+            resources=srcs,
+            effort="30分 / 0円",
+            risks="配信量が落ちる",
+            mitigation="完全一致の拡張/入札調整でボリュームを確保"
+        ),
+    ]
+
+    week = [
+        ActionItem(
+            title=f"ABテスト計画：見出し/CTA/ファーストビュー（{f5}）",
+            why="テスト可能な差分で意思決定を早めるため。",
+            steps=[
+                "仮説→差分→評価指標→停止基準を1枚に定義",
+                "見出し2案・CTA2案・ヒーロー画像2案で2×2比較",
+                "UTMで各案を識別→日次で指標をロギング",
+            ],
+            kpi="CVR / CTR / スクロール率",
+            target="勝ち案CVR +15%以上で採用",
+            resources=srcs,
+            effort="2〜3時間 / 0〜数千円",
+            risks="母数不足で有意差が出ない",
+            mitigation="大きめ差分→期間を7〜14日に延長"
+        ),
+        ActionItem(
+            title=f"検討素材の整備：FAQ×5 & 比較表×1（{f4}）",
+            why="不安解消が検討前進のボトルネックになりやすいため。",
+            steps=[
+                "問合せ/口コミから質問TOP5を抽出→100文字以内で回答",
+                "競合2社との比較表（○/△/×）を作成",
+                "内部リンク：関連導線からFAQ/比較へ誘導",
+            ],
+            kpi="資料DL/滞在時間/セッションあたりPV",
+            target="資料DL +20% / 滞在 +15%",
+            resources=srcs,
+            effort="1.5時間 / 0円",
+            risks="“比較優位”の表現が曖昧",
+            mitigation="定量項目（価格/サポート/保証）で差分を明示"
+        ),
+    ]
+
+    month = [
+        ActionItem(
+            title=f"検索集客：悩み/比較/HowTo記事×3本（{f1}）",
+            why="“今すぐ客”だけでなく検討層を拾って低CPOで流入を増やす。",
+            steps=[
+                "キーワードを3つ選定→検索意図を見出しに写経",
+                "本文は結論先出し+箇条書き→LPへ内部リンク",
+                "リッチスニペット（FAQ/HowTo）をマークアップ",
+            ],
+            kpi="自然検索セッション / 入口CVR",
+            target="+30% / 入口CVR +0.3pt（30日）",
+            resources=srcs,
+            effort="4〜6時間 / 0円",
+            risks="インデックス遅延・重複コンテンツ",
+            mitigation="Fetch as Google/構造化データ/カニバ確認"
+        ),
+        ActionItem(
+            title=f"CRM：オンボ配信3通（価値→不安解消→締切）（{f6}）",
+            why="初回体験の質はLTVに直結。離脱を抑制し継続へ繋ぐ。",
+            steps=[
+                "価値提示（成功体験と導入事例）",
+                "不安解消（返金/サポート/実装手順）",
+                "締切（特典/期限）と次の行動を1つだけ",
+            ],
+            kpi="開封率 / クリック率 / 継続率",
+            target="開封 +5pt / クリック +2pt / 継続 +3pt",
+            resources=srcs,
+            effort="2時間 / 0円",
+            risks="過度な訴求でスパム判定",
+            mitigation="配信頻度を週1〜2に調整/オプト明記"
+        ),
+    ]
+
+    return {
+        "why": why_text,
+        "sources": srcs,
+        "today": today,
+        "week": week,
+        "month": month,
+    }
