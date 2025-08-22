@@ -1,10 +1,11 @@
 # ai_core_plus.py
-# Web情報を活用して「チャネル別コピー複数案」「Instagramリール（3カット＋字幕）」
-# そして「実行計画（What/How/Action）」を動的生成
+# Web情報を活用して「チャネル別コピー」「Instagramリール（3カット＋字幕）」
+# 「実行計画（What/How/Action）」を動的生成。salt/nonce に対応し出力の多様性を担保。
 from __future__ import annotations
 import re
 import html
 import random
+import hashlib
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
 from collections import Counter
@@ -113,6 +114,24 @@ def dynamic_advice(inputs: Dict[str, Any], tone: str, variant_seed: Optional[int
         "ひとこと": rng.choice(closer_opts),
     }
 
+# ============ salt/nonce 用ヘルパー ============
+def _seed_from(*parts: str) -> int:
+    s = "|".join(p for p in parts if p is not None)
+    return int(hashlib.sha256(s.encode("utf-8")).hexdigest(), 16) % (2**32)
+
+def _ensure_variety(make_one, n: int, max_retry: int = 3) -> list[str]:
+    """
+    make_one() を呼び出して n 件作る。重複が多い場合は最大 max_retry 回まで作り直し。
+    """
+    out: list[str] = []
+    tries = 0
+    while len(out) < n and tries < n * (1 + max_retry):
+        v = make_one()
+        tries += 1
+        if v not in out:
+            out.append(v)
+    return out
+
 # ============ Web収集ユーティリティ ============
 DEFAULT_SOURCES = [
     "https://news.google.com/rss/search?q={query}&hl=ja&gl=JP&ceid=JP:ja",
@@ -183,32 +202,40 @@ def extract_keypoints(texts: List[str], top_k: int = 20) -> List[str]:
 
 # ============ Instagramリール（3カット＋字幕） ============
 def generate_instagram_reel_script(product: str, industry: str, keypoints: List[str], web_titles: List[str],
-                                   tone: str = "カジュアル", n: int = 3) -> List[Dict[str, str]]:
-    """
-    Instagramリール用の3カット構成＋字幕付きコピー案をn案生成。
-    """
-    rng = random.Random(product + "|" + industry + "|" + "".join(keypoints) + "|" + tone)
-    candidates = (keypoints + web_titles) if (keypoints or web_titles) else [f"{product} の魅力", "ユーザーボイス", "お悩み解決"]
+                                   tone: str = "カジュアル", n: int = 3, salt: str | None = None) -> List[Dict[str, str]]:
+    seed = _seed_from("reels", product, industry, tone, " ".join(keypoints), " ".join(web_titles), salt or "")
+    rng = random.Random(seed)
+    base_candidates = (keypoints + web_titles) if (keypoints or web_titles) else [f"{product} の魅力", "ユーザーボイス", "お悩み解決"]
     scripts: List[Dict[str, str]] = []
-    for _ in range(n):
-        c = rng.sample(candidates, min(3, len(candidates))) if len(candidates) >= 3 else candidates * 3
-        cut1, cut2, cut3 = c[0], c[1], c[2]
+
+    def one_reel():
+        candidates = base_candidates[:]
+        rng.shuffle(candidates)
+        take = candidates[:3] if len(candidates) >= 3 else (candidates * 3)[:3]
+        cut1, cut2, cut3 = take
         script = {
             "カット1（掴み）": f"映像：『{cut1}』を強いビジュアルで（最初の1秒で結論）\n字幕：『{cut1}、実はここがスゴい』\nSFX：タップ音／ズームイン",
             "カット2（価値提示）": f"映像：{product}の使用例 or Before→After／UI画面／口コミ\n字幕：『{cut2} が変わると… → 劇的にラク！』\nSFX：スウッシュ／テロップ",
             "カット3（行動喚起）": f"映像：CTA（商品→詳細・無料体験・予約導線）\n字幕：『今なら0円で体験 ▶ プロフィールのリンクへ』\nSFX：上向き矢印／指差し",
         }
-        # トーン調整（簡易）
         if tone == "ビジネス":
             for k in script:
                 script[k] = script[k].replace("スゴい", "注目ポイント").replace("ラク", "効率化")
         elif tone == "ユーモラス":
             for k in script:
                 script[k] += " 😂"
-        scripts.append(script)
+        sig = "|".join(script.values())
+        return sig, script
+
+    seen = set()
+    while len(scripts) < n:
+        sig, sc = one_reel()
+        if sig in seen:
+            continue
+        seen.add(sig); scripts.append(sc)
     return scripts
 
-# ============ チャネル別コピー（Web活用・SNS強化） ============
+# ============ トーン適用 ============
 def _apply_tone(text: str, tone: str) -> str:
     if tone == "ビジネス": 
         return text.replace("！","。").replace("🔥","").replace("✨","").replace("💡","")
@@ -216,9 +243,12 @@ def _apply_tone(text: str, tone: str) -> str:
         return text + " 🤣"
     return text
 
+# ============ チャネル別コピー（Web活用・SNS強化） ============
 def web_enabled_channel_copies(product: str, industry: str, keypoints: List[str], web_titles: List[str],
-                               tone: str = "カジュアル", n: int = 5, sns_focus: bool = False) -> Dict[str, List[str]]:
-    rng = random.Random("".join(keypoints) + product + industry + ("SNS" if sns_focus else ""))
+                               tone: str = "カジュアル", n: int = 5, sns_focus: bool = False,
+                               salt: str | None = None) -> Dict[str, List[str]]:
+    seed = _seed_from("copies", product, industry, tone, " ".join(keypoints), " ".join(web_titles), salt or "")
+    rng = random.Random(seed)
     candidates = [w for w in (keypoints + web_titles) if w] or [f"{industry} トレンド", f"{product} 口コミ", "無料体験", "導入事例"]
     if sns_focus:
         candidates += ["#キャンペーン", "#期間限定", "#先着", "#ビフォーアフター", "UGC", "ハイライト", "保存して後で読む"]
@@ -231,35 +261,50 @@ def web_enabled_channel_copies(product: str, industry: str, keypoints: List[str]
     }
     sns_n = n + 2 if sns_focus else n
 
-    for _ in range(sns_n):
+    def one_twitter():
         s = rng.sample(candidates, min(3, len(candidates)))
         hash_tags = (" #" + s[0].split()[0]) if sns_focus else ""
-        copies["SNS/Twitter(X)"].append(_apply_tone(f"【{product}】注目 → {' / '.join(s)}{hash_tags}｜詳しくは🔗", tone))
-    for _ in range(sns_n):
+        return _apply_tone(f"【{product}】注目 → {' / '.join(s)}{hash_tags}｜詳しくは🔗", tone)
+    copies["SNS/Twitter(X)"] = _ensure_variety(one_twitter, sns_n)
+
+    def one_instagram():
         s = rng.sample(candidates, min(4, len(candidates)))
         ht = " ".join({f"#{w.split()[0][:12]}" for w in s}) if sns_focus else ""
-        copies["SNS/Instagram"].append(_apply_tone(f"📸 {product} の推し：{' ・ '.join(s)}\n{ht}\n保存して後で見返す ✨", tone))
-    for _ in range(sns_n):
-        s = rng.sample(candidates, min(3, len(candidates)))
-        copies["SNS/LinkedIn"].append(_apply_tone(f"{industry}の最新論点：{', '.join(s)}。{product} の活用ポイントを共有します。", tone))
+        return _apply_tone(f"📸 {product} の推し：{' ・ '.join(s)}\n{ht}\n保存して後で見返す ✨", tone)
+    copies["SNS/Instagram"] = _ensure_variety(one_instagram, sns_n)
 
-    for _ in range(n):
-        s = rng.sample(candidates, min(2, len(candidates)))
-        copies["広告/Google"].append(_apply_tone(f"{product}｜{'・'.join(s)}。まずは無料で体験。", tone))
-    for _ in range(n):
-        s = rng.sample(candidates, min(2, len(candidates)))
-        copies["広告/Meta"].append(_apply_tone(f"{product} を試す理由 → {' / '.join(s)}。申込は30秒 ⏱", tone))
-    for _ in range(n):
+    def one_linkedin():
         s = rng.sample(candidates, min(3, len(candidates)))
-        copies["メール/件名"].append(f"{product}で成果が動いた要因：{', '.join(s)}")
-    for _ in range(n):
+        return _apply_tone(f"{industry}の最新論点：{', '.join(s)}。{product} の活用ポイントを共有します。", tone)
+    copies["SNS/LinkedIn"] = _ensure_variety(one_linkedin, sns_n)
+
+    def one_gads():
+        s = rng.sample(candidates, min(2, len(candidates)))
+        return _apply_tone(f"{product}｜{'・'.join(s)}。まずは無料で体験。", tone)
+    copies["広告/Google"] = _ensure_variety(one_gads, n)
+
+    def one_meta():
+        s = rng.sample(candidates, min(2, len(candidates)))
+        return _apply_tone(f"{product} を試す理由 → {' / '.join(s)}。申込は30秒 ⏱", tone)
+    copies["広告/Meta"] = _ensure_variety(one_meta, n)
+
+    def one_subj():
         s = rng.sample(candidates, min(3, len(candidates)))
-        copies["メール/本文"].append(_apply_tone(
+        return f"{product}で成果が動いた要因：{', '.join(s)}"
+    copies["メール/件名"] = _ensure_variety(one_subj, n)
+
+    def one_body():
+        s = rng.sample(candidates, min(3, len(candidates)))
+        return _apply_tone(
             f"{product}にご関心ありがとうございます。\n今回は「{', '.join(s)}」の観点から、すぐ使えるヒントを2分でご紹介します。\n→ 詳細はリンク先へ。", tone
-        ))
-    for _ in range(n):
+        )
+    copies["メール/本文"] = _ensure_variety(one_body, n)
+
+    def one_hero():
         s = rng.sample(candidates, min(2, len(candidates)))
-        copies["LP/ヒーロー"].append(f"{product} — {industry}のいまに効く。{s[0] if s else '今必要な一手'}を最短で体験。")
+        return f"{product} — {industry}のいまに効く。{s[0] if s else '今必要な一手'}を最短で体験。"
+    copies["LP/ヒーロー"] = _ensure_variety(one_hero, n)
+
     return copies
 
 # ============ メイン：Web → コピー/リール生成 ============
@@ -268,7 +313,8 @@ def web_research_to_copies(query: str, product: str, industry: str,
                            max_items: int = 10,
                            tone: str = "カジュアル",
                            sns_focus: bool = False,
-                           include_reels: bool = False) -> Dict[str, Any]:
+                           include_reels: bool = False,
+                           salt: str | None = None) -> Dict[str, Any]:
     items = fetch_web_sources(query, extra_urls=extra_urls, limit=max_items)
     texts, enriched = [], []
     for it in items:
@@ -281,9 +327,9 @@ def web_research_to_copies(query: str, product: str, industry: str,
     web_titles = [s["title"] for s in enriched if s.get("title")]
     copies = web_enabled_channel_copies(
         product=product, industry=industry, keypoints=keypoints, web_titles=web_titles,
-        tone=tone, n=5, sns_focus=sns_focus
+        tone=tone, n=5, sns_focus=sns_focus, salt=salt
     )
-    reels = generate_instagram_reel_script(product, industry, keypoints, web_titles, tone, n=3) if include_reels else []
+    reels = generate_instagram_reel_script(product, industry, keypoints, web_titles, tone, n=3, salt=salt) if include_reels else []
     return {"sources": enriched, "keypoints": keypoints, "copies": copies, "reels": reels}
 
 # ============ 実行計画：Web → Plan（What/How/Action） ============
@@ -305,10 +351,11 @@ def _shorten(txt: str, n: int = 120) -> str:
 def web_research_to_plan(query: str, product: str, industry: str,
                          extra_urls: Optional[List[str]] = None,
                          max_items: int = 8,
-                         tone: str = "カジュアル") -> Dict[str, Any]:
+                         tone: str = "カジュアル",
+                         salt: str | None = None) -> Dict[str, Any]:
     try:
         res = web_research_to_copies(query=query, product=product, industry=industry,
-                                     extra_urls=extra_urls, max_items=max_items, tone=tone)
+                                     extra_urls=extra_urls, max_items=max_items, tone=tone, salt=salt)
     except Exception:
         res = {"sources": [], "keypoints": [], "copies": {}}
 
