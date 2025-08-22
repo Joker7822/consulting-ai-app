@@ -75,7 +75,7 @@ html, body, [class*="css"]  { font-size: 16px; }
 .small { color:#6b7280; font-size:12px; }
 .step { display:inline-block; padding:4px 10px; border-radius:999px; background:#f2f4f7; margin-right:8px; font-size:13px; }
 .ad { border:1px dashed #c9c9c9; border-radius:12px; padding:14px; margin:8px 0; background:#fffef7; }
-.badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; margin-left:8px; }
+.badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; }
 .copybox textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; }
 </style>
 """, unsafe_allow_html=True)
@@ -93,6 +93,10 @@ def ensure_session():
     st.session_state.setdefault("explain_terms", True)
     st.session_state.setdefault("friendly", True)
     st.session_state.setdefault("emoji_rich", True)
+    # 自動生成フラグ
+    st.session_state.setdefault("auto_plan_done", False)
+    st.session_state.setdefault("auto_copies_done", False)
+    st.session_state.setdefault("auto_reels_done", False)
 ensure_session()
 
 def goto(page_name: str):
@@ -179,6 +183,10 @@ def render_input():
                 "score_referral": score_referral,
             }
             st.session_state.ad_started_at = None
+            # 自動生成フラグをリセット
+            st.session_state.auto_plan_done = False
+            st.session_state.auto_copies_done = False
+            st.session_state.auto_reels_done = False
             goto("ad")
 
 # =========================
@@ -238,89 +246,134 @@ def render_result():
     st.write(f"- **強み/弱み**: {inputs.get('strength')} / {inputs.get('weakness')}")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # ========== Web情報 → 実行計画（＋任意でチャネル別コピー複数案） ==========
-    st.markdown("### ✅ Web情報をもとに『何を/どうやるか/どう測るか』を自動設計")
+    # 自動クエリ（SNS強化向け）
+    def _default_query_for_web(inputs: Dict[str, Any]) -> str:
+        kw = [
+            inputs.get("industry",""),
+            inputs.get("product",""),
+            "SNS マーケティング 事例 ベストプラクティス 2025"
+        ]
+        return " ".join([k for k in kw if k]).strip()
+
+    # ========== Web情報 → 実行計画（＋SNSコピー/リール自動生成） ==========
+    st.markdown("### ✅ Web情報をもとに『何を/どうやるか/どう測るか』を自動設計（SNS強化）")
     if not HAS_PLAN:
         st.info("実行計画ジェネレーターが見つかりません。`ai_core_plus.py` に `web_research_to_plan` を追加してください。")
     else:
-        with st.expander("検索条件（任意で調整）", expanded=True):
-            default_query = f"{inputs.get('industry','')} {inputs.get('product','')}".strip()
-            web_query = st.text_input("検索クエリ", value=default_query)
-            max_items = st.slider("最大取得件数", min_value=3, max_value=20, value=8, step=1)
-            extra_urls_str = st.text_area("追加で読み込みたいURL（改行区切り）", height=80, placeholder="")
-            tone_choice = st.selectbox("トーン", ["カジュアル","ビジネス","ユーモラス"], index=0)
-            gen_copies = st.checkbox("チャネル別コピー（Web活用・複数案）も生成する", value=True and HAS_WEB_COPIES)
-            plan_go = st.button("Webから収集→実行計画を作る ▶")
+        default_query = _default_query_for_web(inputs)
+        extra_urls_list: List[str] = []
 
-        if plan_go:
-            with st.spinner("Webから情報収集→計画に落とし込み中..."):
+        # 実行計画：初回だけ自動生成
+        if not st.session_state.auto_plan_done:
+            with st.spinner("Webから情報収集→計画に落とし込み中（SNS強化）..."):
                 plan = web_research_to_plan(
-                    query=web_query or default_query,
+                    query=default_query,
                     product=inputs.get("product","サービス"),
                     industry=inputs.get("industry","その他"),
-                    extra_urls=[u.strip() for u in (extra_urls_str.splitlines() if extra_urls_str else []) if u.strip()],
-                    max_items=max_items,
-                    tone=tone_choice
+                    extra_urls=extra_urls_list,
+                    max_items=8,
+                    tone=st.session_state.get("tone","やさしめ")
                 )
+            st.session_state["auto_plan"] = plan
+            st.session_state.auto_plan_done = True
+        else:
+            plan = st.session_state.get("auto_plan", {"sources":[], "today":[], "week":[], "month":[]})
 
-            # 情報源
-            if plan.get("sources"):
-                st.caption("参照情報（抜粋）：" + " / ".join(
-                    [f"[{s.get('title','source')}]({s.get('url')})" for s in plan["sources"] if s.get("url")]
-                ))
+        # 情報源
+        if plan.get("sources"):
+            st.caption("参照情報（抜粋）：" + " / ".join(
+                [f"[{s.get('title','source')}]({s.get('url')})" for s in plan["sources"] if s.get("url")]
+            ))
 
-            # 実行計画の描画
-            def render_bucket(title, items):
-                st.markdown(f"#### {title}")
-                if not items:
-                    st.write("- （該当なし）"); return
-                for i, it in enumerate(items, start=1):
-                    with st.container():
-                        st.markdown(f"**{i}. {getattr(it, 'title', '')}**")
-                        st.caption(f"なぜ：{getattr(it, 'why', '')}")
-                        st.write("**やること（手順）**")
-                        for step in getattr(it, "steps", []):
-                            st.write("- " + step)
-                        st.write(f"**KPI**：{getattr(it, 'kpi', '')}｜**目標**：{getattr(it, 'target', '')}｜**工数/コスト**：{getattr(it, 'effort', '')}")
-                        with st.expander("リスクと手当て"):
-                            st.write(f"- リスク：{getattr(it, 'risks', '')}")
-                            st.write(f"- 手当て：{getattr(it, 'mitigation', '')}")
-                        # コピペ用
-                        src_urls = ", ".join([s.get("url") for s in plan["sources"] if s.get("url")])
-                        txt = f"""{getattr(it, 'title', '')}
+        # 実行計画の描画
+        def render_bucket(title, items):
+            st.markdown(f"#### {title}")
+            if not items:
+                st.write("- （該当なし）"); return
+            for i, it in enumerate(items, start=1):
+                with st.container():
+                    st.markdown(f"**{i}. {getattr(it, 'title', '')}**")
+                    st.caption(f"なぜ：{getattr(it, 'why', '')}")
+                    st.write("**やること（手順）**")
+                    for step in getattr(it, "steps", []):
+                        st.write("- " + step)
+                    st.write(f"**KPI**：{getattr(it, 'kpi', '')}｜**目標**：{getattr(it, 'target', '')}｜**工数/コスト**：{getattr(it, 'effort', '')}")
+                    with st.expander("リスクと手当て"):
+                        st.write(f"- リスク：{getattr(it, 'risks', '')}")
+                        st.write(f"- 手当て：{getattr(it, 'mitigation', '')}")
+                    # コピペ用
+                    src_urls = ", ".join([s.get("url") for s in plan["sources"] if s.get("url")])
+                    txt = f"""{getattr(it, 'title', '')}
 - WHY: {getattr(it, 'why', '')}
 - STEPS: {", ".join(getattr(it, "steps", []))}
 - KPI: {getattr(it, 'kpi', '')} / 目標: {getattr(it, 'target', '')}
 - 工数/コスト: {getattr(it, 'effort', '')}
 - 参考: {src_urls}"""
-                        st.text_area("コピペ用", txt, height=120, key=f"plan_copy_{title}_{i}")
+                    st.text_area("コピペ用", txt, height=120, key=f"plan_copy_auto_{title}_{i}")
 
-            render_bucket("今日やる（即効2〜3件）", plan.get("today", []))
-            render_bucket("今週やる（積み上げ2件）", plan.get("week", []))
-            render_bucket("今月やる（基盤2件）", plan.get("month", []))
+        render_bucket("今日やる（即効2〜3件）", plan.get("today", []))
+        render_bucket("今週やる（積み上げ2件）", plan.get("week", []))
+        render_bucket("今月やる（基盤2件）", plan.get("month", []))
 
-            # 追加：チャネル別コピー（Web活用・複数案）
-            if gen_copies and HAS_WEB_COPIES:
-                with st.spinner("チャネル別コピー（Web活用）を生成中..."):
+        # SNS向けコピー：自動生成（SNS強化）
+        if HAS_WEB_COPIES:
+            if not st.session_state.auto_copies_done:
+                with st.spinner("チャネル別コピー（SNS強化）を自動生成中..."):
                     copies_res = web_research_to_copies(
-                        query=web_query or default_query,
+                        query=default_query,
                         product=inputs.get("product","サービス"),
                         industry=inputs.get("industry","その他"),
-                        extra_urls=[u.strip() for u in (extra_urls_str.splitlines() if extra_urls_str else []) if u.strip()],
-                        max_items=max_items,
-                        tone=tone_choice
+                        extra_urls=extra_urls_list,
+                        max_items=8,
+                        tone=st.session_state.get("tone","やさしめ"),
+                        sns_focus=True,
+                        include_reels=False
                     )
-                st.markdown("### 🧩 チャネル別コピー（Web活用・複数案）")
-                copies = copies_res.get("copies", {})
-                if copies:
-                    tabs = st.tabs(list(copies.keys()))
-                    for tab, (k, arr) in zip(tabs, copies.items()):
-                        with tab:
-                            for i, c in enumerate(arr, start=1):
-                                st.text_area(f"{k}（案 {i}）", c, height=90, key=f"copy_{k}_{i}")
-                    st.caption("※ Web上の傾向を要約して自動生成。ポリシー/レギュレーション適合はご確認ください。")
-                else:
-                    st.info("コピー候補が生成されませんでした。キーワードを変える/URLを追加するなどお試しください。")
+                st.session_state["auto_copies"] = copies_res
+                st.session_state.auto_copies_done = True
+            else:
+                copies_res = st.session_state.get("auto_copies", {"copies":{}})
+
+            st.markdown("### 🧩 チャネル別コピー（SNS強化・自動生成）")
+            copies_all = copies_res.get("copies", {})
+            sns_keys = [k for k in ["SNS/Instagram", "SNS/Twitter(X)", "SNS/LinkedIn"] if k in copies_all]
+            if sns_keys:
+                tabs = st.tabs(sns_keys)
+                for tab, k in zip(tabs, sns_keys):
+                    with tab:
+                        for i, c in enumerate(copies_all[k], start=1):
+                            st.text_area(f"{k}（案 {i}）", c, height=90, key=f"copy_auto_{k}_{i}")
+                st.caption("※ SNSに特化して複数案を自動生成。ハッシュタグ/保存導線などを強化。")
+            else:
+                st.info("SNS向けコピーが生成されませんでした。入力内容（業種・商品）を具体化して再実行してください。")
+
+            # Instagramリール（3カット＋字幕）：自動生成
+            if not st.session_state.auto_reels_done:
+                with st.spinner("Instagramリール（3カット＋字幕）案を自動生成中..."):
+                    reels_res = web_research_to_copies(
+                        query=default_query,
+                        product=inputs.get("product","サービス"),
+                        industry=inputs.get("industry","その他"),
+                        extra_urls=extra_urls_list,
+                        max_items=8,
+                        tone=st.session_state.get("tone","やさしめ"),
+                        sns_focus=True,
+                        include_reels=True
+                    )
+                st.session_state["auto_reels"] = reels_res.get("reels", [])
+                st.session_state.auto_reels_done = True
+            reels = st.session_state.get("auto_reels", [])
+
+            st.markdown("### 🎬 Instagramリール構成（3カット＋字幕）")
+            if reels:
+                for idx, script in enumerate(reels, start=1):
+                    st.markdown(f"#### リール案 #{idx}")
+                    for cut, content in script.items():
+                        st.markdown(f"**{cut}**")
+                        st.text_area(f"{cut}（台本）", content, height=120, key=f"reel_{idx}_{cut}")
+                st.caption("※ 1秒目で掴み→価値提示→CTA の順。字幕は3〜8語/行・2行以内が目安。")
+            else:
+                st.info("リール案が生成されませんでした。入力内容を見直してください。")
 
     # ファネル診断
     diag = funnel_diagnosis(inputs)
@@ -401,23 +454,4 @@ def render_result():
         c1, c2, c3, c4 = st.columns(4)
         with c1: src = st.text_input("utm_source", value="instagram")
         with c2: med = st.text_input("utm_medium", value="social")
-        with c3: camp = st.text_input("utm_campaign", value="launch")
-        with c4: cont = st.text_input("utm_content", value="post")
-        utm = build_utm(base, src, med, camp, cont)
-        if utm: st.code(utm, language="text")
-
-    if st.button("◀ 入力に戻る"):
-        goto("input")
-
-# =========================
-# 画面遷移
-# =========================
-if st.session_state.page == "input":
-    render_input()
-elif st.session_state.page == "ad":
-    render_ad()
-else:
-    render_result()
-
-st.markdown("---")
-st.markdown('<p class="small">※ 本ツールは簡易コンサル支援です。数値は初期目安であり、結果を保証するものではありません。</p>', unsafe_allow_html=True)
+        with c3:
