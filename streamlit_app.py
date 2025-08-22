@@ -1,6 +1,7 @@
 import os
 import time
 import random
+import secrets
 from typing import List, Dict, Any
 
 import pandas as pd
@@ -93,10 +94,11 @@ def ensure_session():
     st.session_state.setdefault("explain_terms", True)
     st.session_state.setdefault("friendly", True)
     st.session_state.setdefault("emoji_rich", True)
-    # 自動生成フラグ
+    # 自動生成フラグ & ノンス
     st.session_state.setdefault("auto_plan_done", False)
     st.session_state.setdefault("auto_copies_done", False)
     st.session_state.setdefault("auto_reels_done", False)
+    st.session_state.setdefault("gen_nonce", secrets.token_hex(4))
 ensure_session()
 
 def goto(page_name: str):
@@ -183,10 +185,11 @@ def render_input():
                 "score_referral": score_referral,
             }
             st.session_state.ad_started_at = None
-            # 自動生成フラグをリセット
+            # 自動生成フラグ & ノンスをリセット
             st.session_state.auto_plan_done = False
             st.session_state.auto_copies_done = False
             st.session_state.auto_reels_done = False
+            st.session_state.gen_nonce = secrets.token_hex(4)
             goto("ad")
 
 # =========================
@@ -257,11 +260,23 @@ def render_result():
 
     # ========== Web情報 → 実行計画（＋SNSコピー/リール自動生成） ==========
     st.markdown("### ✅ Web情報をもとに『何を/どうやるか/どう測るか』を自動設計（SNS強化）")
+    col_ref1, col_ref2 = st.columns([1,3])
+    with col_ref1:
+        if st.button("🔄 生成を更新"):
+            st.session_state.gen_nonce = secrets.token_hex(4)
+            st.session_state.auto_plan_done = False
+            st.session_state.auto_copies_done = False
+            st.session_state.auto_reels_done = False
+            st.rerun()
+    with col_ref2:
+        st.caption("※ 押すたびに表現・順番・ハッシュタグが変わります。")
+
     if not HAS_PLAN:
         st.info("実行計画ジェネレーターが見つかりません。`ai_core_plus.py` に `web_research_to_plan` を追加してください。")
     else:
         default_query = _default_query_for_web(inputs)
         extra_urls_list: List[str] = []
+        salt = st.session_state.get("gen_nonce")
 
         # 実行計画：初回だけ自動生成
         if not st.session_state.auto_plan_done:
@@ -272,7 +287,8 @@ def render_result():
                     industry=inputs.get("industry","その他"),
                     extra_urls=extra_urls_list,
                     max_items=8,
-                    tone=st.session_state.get("tone","やさしめ")
+                    tone=tone,
+                    salt=salt  # ★ ノンス混入
                 )
             st.session_state["auto_plan"] = plan
             st.session_state.auto_plan_done = True
@@ -325,9 +341,10 @@ def render_result():
                         industry=inputs.get("industry","その他"),
                         extra_urls=extra_urls_list,
                         max_items=8,
-                        tone=st.session_state.get("tone","やさしめ"),
+                        tone=tone,
                         sns_focus=True,
-                        include_reels=False
+                        include_reels=False,
+                        salt=salt  # ★ ノンス混入
                     )
                 st.session_state["auto_copies"] = copies_res
                 st.session_state.auto_copies_done = True
@@ -356,9 +373,10 @@ def render_result():
                         industry=inputs.get("industry","その他"),
                         extra_urls=extra_urls_list,
                         max_items=8,
-                        tone=st.session_state.get("tone","やさしめ"),
+                        tone=tone,
                         sns_focus=True,
-                        include_reels=True
+                        include_reels=True,
+                        salt=salt  # ★ ノンス混入
                     )
                 st.session_state["auto_reels"] = reels_res.get("reels", [])
                 st.session_state.auto_reels_done = True
