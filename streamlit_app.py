@@ -454,4 +454,23 @@ def render_result():
         c1, c2, c3, c4 = st.columns(4)
         with c1: src = st.text_input("utm_source", value="instagram")
         with c2: med = st.text_input("utm_medium", value="social")
-        with c3:
+        with c3: camp = st.text_input("utm_campaign", value="launch")
+        with c4: cont = st.text_input("utm_content", value="post")
+        utm = build_utm(base, src, med, camp, cont)
+        if utm: st.code(utm, language="text")
+
+    if st.button("◀ 入力に戻る"):
+        goto("input")
+
+# =========================
+# 画面遷移
+# =========================
+if st.session_state.page == "input":
+    render_input()
+elif st.session_state.page == "ad":
+    render_ad()
+else:
+    render_result()
+
+st.markdown("---")
+st.markdown('<p class="small">※ 本ツールは簡易コンサル支援です。数値は初期目安であり、結果を保証するものではありません。</p>', unsafe_allow_html=True)
