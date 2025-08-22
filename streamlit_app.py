@@ -60,7 +60,9 @@ except Exception:
     def web_research_to_plan(*args, **kwargs) -> dict:
         return {"why": "", "sources": [], "today": [], "week": [], "month": []}
 
-# チャネル別コピー（Web情報→コピー生成）
+# =========================================
+# 追加：チャネル別コピー（Web→コピー生成）
+# =========================================
 try:
     from ai_core_plus import web_research_to_copies  # type: ignore
     HAS_COPIES = True
@@ -240,7 +242,7 @@ def render_ad():
         st.rerun()
 
 # =========================
-# チャネル別コピー UI セクション
+# 追加：チャネル別コピー生成セクション
 # =========================
 def render_channel_copies_section(inputs):
     st.markdown("### ✍️ チャネル別コピー（Web情報→そのまま使える複数案）")
@@ -454,7 +456,7 @@ def render_result():
         for line in acts.get(h, []):
             st.write("- " + explain_terms(line, st.session_state.get("explain_terms", True)))
 
-    # 具体例（テンプレ出力は残しておく）
+     # 具体例（テンプレ出力は残しておく）
     st.markdown("### 具体例（コピーテンプレ/トーク）")
     ex = concrete_examples(inputs, tone)
     def getkey(d, k, default=""):
@@ -470,7 +472,6 @@ def render_result():
         if getkey(ex, "DMポイント"): st.caption(getkey(ex, "DMポイント"))
         st.write("**電話トーク**：", explain_terms(getkey(ex, "電話トーク", ""), st.session_state.get("explain_terms", True)))
         if getkey(ex, "電話ポイント"): st.caption(getkey(ex, "電話ポイント"))
-
     # KPI逆算（ゴールからバックキャスト）
     st.markdown("### KPI逆算（ゴールからバックキャスト）")
     kpi_df = kpi_backsolve(inputs)
@@ -489,7 +490,7 @@ def render_result():
     plan_df = pd.DataFrame(rows)
     st.download_button("📥 アクション計画（CSV）", plan_df.to_csv(index=False).encode("utf-8-sig"), "actions.csv", "text/csv")
 
-    # UTMビルダー
+# UTMビルダー
     with st.expander("UTMリンクビルダー"):
         base = st.text_input("ベースURL", value="https://example.com/landing")
         c1, c2, c3, c4 = st.columns(4)
